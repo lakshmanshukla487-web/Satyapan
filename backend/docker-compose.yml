@@ -1,0 +1,16 @@
+services:
+  api:
+    build: { context: ., args: { WITH_ML: "true" } }
+    env_file: .env
+    environment:
+      ALLOWED_HOSTS: "localhost,127.0.0.1"
+      DATABASE_URL: "sqlite:////data/satyapan.db"
+      REDIS_URL: "redis://redis:6379/0"
+      IP_DATA_DIR: "/data/ip"
+    ports: ["8000:8000"]
+    volumes: ["./models:/srv/models:ro", "satyapan-data:/data"]
+    depends_on: [redis]
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]   # cache and channel layer only; nothing to persist
+volumes: { satyapan-data: {} }

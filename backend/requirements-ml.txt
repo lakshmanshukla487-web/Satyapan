@@ -1,0 +1,7 @@
+-r requirements.txt
+#torch==2.5.1
+torch==2.2.2; sys_platform == "darwin" and platform_machine == "x86_64"
+torch==2.5.1; sys_platform != "darwin" or platform_machine != "x86_64"
+transformers==4.46.3
+huggingface_hub==0.26.5
+mediapipe==0.10.18   # pulls in OpenCV (opencv-contrib-python), which provides the YuNet / SFace face models used for face match

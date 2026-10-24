@@ -1,0 +1,8 @@
+# Optional: OCR corroboration of uploaded documents (checks that the typed ID number is visible in the image).
+# Needs the Tesseract program installed on the machine too (macOS: brew install tesseract; Windows: UB-Mannheim build).
+-r requirements.txt
+pytesseract==0.3.13
+# Redis: shared rate limiting, shared cache, shared WebSocket layer and cross-process back-pressure.
+# Needed when you run more than one server process (or want the site to stay fast under many customers). Set REDIS_URL too.
+redis==5.2.1
+channels-redis==4.2.1
