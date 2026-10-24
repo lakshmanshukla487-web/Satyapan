@@ -92,6 +92,7 @@ class EyeScanDetector(BaseDetector):
         s = self.settings
         ref = {k: iris.unpack(v) for k, v in (media.get("ref") or {}).items() if v}
         hds: dict[str, list[float]] = {"right": [], "left": []}
+        diams: list[float] = []  # iris diameter of each comparison (the smaller of reference and probe)
         usable_frames, per_frame, max_close, max_ear = 0, [], 0.0, 0.0
         for rgb in media["frames"]:
             t = self.template_from_frame(np.asarray(rgb))
@@ -109,6 +110,7 @@ class EyeScanDetector(BaseDetector):
                     cmp = iris.compare(ref[side], tpl)
                     if cmp["bits"] >= iris.MIN_BITS:
                         hds[side].append(cmp["hd"])
+                        diams.append(min(q["diameter_px"], ref[side]["quality"].get("diameter_px", 0.0)))
                         row[side]["hd"] = cmp["hd"]
                         ok_any = True
             usable_frames += int(ok_any)
@@ -124,6 +126,13 @@ class EyeScanDetector(BaseDetector):
         eye_med = [float(np.median(v)) for v in hds.values() if v]
         hd = float(np.mean(eye_med))
         bad = sum(1 for x in all_hd if x >= s.iris_mismatch_hd)
+        diam = float(np.median(diams))
+        details["iris_diameter_px"] = round(diam, 1)
+        if diam < s.iris_min_verdict_px:
+            # Measured on real photo pairs (two photos of the same person vs different people): with irises of 40-55 px the code
+            # barely separates people (AUC ~0.62), so a match/mismatch verdict would be wrong far too often. Report it, judge nothing.
+            details.update({"hamming_distance": round(hd, 4), "verdict": "uncertain", "readings": len(all_hd), "why": "IRIS_TOO_SMALL_FOR_VERDICT"})
+            return self.result("ok", round(min(self._score(hd), 0.6), 4), label="uncertain", details=details)
         if hd <= s.iris_match_hd:
             verdict = "match"
         elif hd >= s.iris_mismatch_hd and bad >= 2:

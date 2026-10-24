@@ -19,6 +19,8 @@ log = logging.getLogger("satyapan.faces")
 DETECTOR_FILE = "face_detection_yunet_2023mar.onnx"
 RECOGNISER_FILE = "face_recognition_sface_2021dec.onnx"
 MAX_DETECT_SIDE = 960
+CLOSE_UP_SIDE = 480    # second pass for close-ups: the padded image is shrunk to this size ...
+CLOSE_UP_PAD = 0.25    # ... after adding a border of this share of the image size on every side
 
 
 class FaceEngine:
@@ -34,22 +36,40 @@ class FaceEngine:
         self._lock = threading.Lock()  # OpenCV DNN objects are not safe to share between threads
 
     def detect(self, rgb: np.ndarray) -> list[dict]:
-        """Faces sorted by size (largest first): {box:(x,y,w,h) in original pixels, score, row} ."""
-        cv2 = self.cv2
+        """Faces sorted by size (largest first): {box:(x,y,w,h) in original pixels, score, row} .
+
+        YuNet misses faces that fill the picture (measured: 13 of 60 close-up 1024 px portraits found as-is, 60 of 60 with a border),
+        and a close-up is exactly what the start photo and the eye scan ask for. So when the first pass finds nothing, the image is
+        shrunk and given a border, and detection runs again; boxes and landmarks are mapped back to the original pixels."""
         h, w = rgb.shape[:2]
-        scale = min(1.0, MAX_DETECT_SIDE / max(h, w))
-        small = cv2.resize(rgb, (int(w * scale), int(h * scale))) if scale < 1 else rgb
+        out = self._detect_at(rgb, min(1.0, MAX_DETECT_SIDE / max(h, w)), 0)
+        if not out:
+            pad = int(max(h, w) * CLOSE_UP_PAD)
+            out = self._detect_at(rgb, CLOSE_UP_SIDE / (max(h, w) + 2 * pad), pad)
+        out.sort(key=lambda f: -(f["box"][2] * f["box"][3]))
+        return out
+
+    def _detect_at(self, rgb: np.ndarray, scale: float, pad: int) -> list[dict]:
+        cv2 = self.cv2
+        img = np.pad(rgb, ((pad, pad), (pad, pad), (0, 0)), mode="constant") if pad else rgb
+        h, w = img.shape[:2]
+        small = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA) if scale < 1 else img
         bgr = cv2.cvtColor(np.ascontiguousarray(small), cv2.COLOR_RGB2BGR)
         with self._lock:
             self._det.setInputSize((bgr.shape[1], bgr.shape[0]))
             _, rows = self._det.detect(bgr)
+        oh, ow = rgb.shape[:2]
         out = []
         for r in (rows if rows is not None else []):
             r = np.array(r, dtype=np.float32)
             r_full = r.copy()
-            r_full[:14] = r[:14] / scale
-            out.append({"box": tuple(float(v) for v in r_full[:4]), "score": float(r[14]), "row": r_full})
-        out.sort(key=lambda f: -(f["box"][2] * f["box"][3]))
+            r_full[:14] = r[:14] / min(scale, 1.0)
+            r_full[[0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]] -= pad  # x, y of the box and of the 5 landmarks (w, h unchanged)
+            x, y, bw, bh = (float(v) for v in r_full[:4])
+            x0, y0, x1, y1 = max(0.0, x), max(0.0, y), min(float(ow), x + bw), min(float(oh), y + bh)
+            if x1 - x0 < 8 or y1 - y0 < 8:
+                continue  # a "face" in the added border only
+            out.append({"box": (x, y, bw, bh), "score": float(r[14]), "row": r_full})
         return out
 
     def embed(self, rgb: np.ndarray, face: dict) -> np.ndarray:

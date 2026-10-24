@@ -46,12 +46,21 @@ def resample(wave: np.ndarray, sr: int, target: int) -> np.ndarray:
 
 
 def decode_image(data: bytes, max_dim: int) -> Image.Image:
+    """RGB image, upright. Phone photos carry their rotation in EXIF: without applying it a portrait selfie reaches the face
+    detector lying on its side ('no face'). Large JPEGs (phone cameras, 48 MP) are shrunk while decoding (DCT scaling, cheap and
+    safe); other formats above max_dim are refused before their pixels are decoded."""
+    from PIL import ImageOps
     sniff(data, "image")
     try:
         img = Image.open(io.BytesIO(data))
-        if max(img.size) > max_dim:
+        if max(img.size) > max_dim and img.format == "JPEG":
+            img.draft("RGB", (max_dim, max_dim))  # decodes at 1/2, 1/4 or 1/8 size: never the full 48 MP
+        if max(img.size) > (max_dim * 2 if img.format == "JPEG" else max_dim):
             raise AppError("IMAGE_TOO_LARGE", f"Image dimensions exceed {max_dim}px.", 422)
         img.load()
+        img = ImageOps.exif_transpose(img) or img
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
         return img.convert("RGB")
     except AppError:
         raise

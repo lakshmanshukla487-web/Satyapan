@@ -64,7 +64,15 @@ if a.all or a.faces:
     for name, url in FILES.items():
         step(name, lambda n=name, u=url: fetch(u, root / n))
 if a.all or a.landmarks:
-    step("face landmarker", lambda: fetch(LANDMARKER, root / "face_landmarker.task"))
+    def _landmarks():
+        local = Path(__file__).resolve().parents[2] / "frontend" / "public" / "models" / "face_landmarker.task"  # same file, already in the repo
+        if local.is_file():
+            import shutil
+            shutil.copyfile(local, root / "face_landmarker.task")
+            print(f"  copied {local} -> {root / 'face_landmarker.task'}")
+        else:
+            fetch(LANDMARKER, root / "face_landmarker.task")
+    step("face landmarker", _landmarks)
 if a.all or a.speech:
     def _speech():
         from huggingface_hub import snapshot_download

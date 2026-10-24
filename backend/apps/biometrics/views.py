@@ -54,8 +54,8 @@ def reference_photo(request, session_id):
     raw = read_upload(request, cfg.max_upload_mb)
     img = decode_image(raw, cfg.max_image_dimension)
     rt = get_runtime()
-    out = _in_pool(rt, bs.enrol_reference, rt, s, np.asarray(img), raw)
-    return Response(out)
+    analysed = _in_pool(rt, bs.analyse_reference, rt, np.asarray(img))  # models in the worker pool ...
+    return Response(bs.save_reference(s, analysed, raw))                # ... the database write here, in the request thread
 
 
 @extend_schema(tags=["biometrics"], request=UPLOAD_SCHEMA, responses={200: dict})

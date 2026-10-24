@@ -84,7 +84,10 @@ def test_missing_ml_dependencies_or_weights_do_not_crash(tmp_path):
     reg = DetectorRegistry(make_settings(model_dir=str(tmp_path), enable_xception_detector=True, enable_syncnet=True))
     for name in ("audio", "vit", "landmarks", "xception", "syncnet"):
         out = reg.get(name).analyze(np.zeros(16000, dtype="float32"))
-        assert out["status"] == "unavailable" and out["score"] is None and out["error_code"]
+        # landmarks falls back to the face_landmarker.task the browser uses (committed in frontend/public/models), so with an empty
+        # MODEL_DIR it may load and then call this non-image input low quality: either way no crash and no score
+        ok = ("unavailable", "low_quality") if name == "landmarks" else ("unavailable",)
+        assert out["status"] in ok and out["score"] is None and out["error_code"]
     states = {d["name"]: d["state"] for d in reg.status()}
     assert states["xception"] == "unavailable" and states["syncnet"] == "unavailable"
 

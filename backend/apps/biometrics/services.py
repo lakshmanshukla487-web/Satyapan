@@ -20,6 +20,7 @@ MESSAGES = {
     "EYES_NOT_WIDE_OPEN": "Open your eyes wide (no squinting, no glasses glare) and look straight at the camera.",
     "FACE_TOO_FAR": "Come closer: your face and eyes should fill most of the picture.",
     "IRIS_DETAIL_LOW": "The eyes are not sharp enough for the eye scan later. A closer, sharper photo helps.",
+    "EYES_NOT_FOUND": "Your eyes could not be measured in this photo. Look straight at the camera with your eyes wide open.",
 }
 BLOCKING = {"NO_FACE", "MULTIPLE_FACES", "FACE_TOO_SMALL", "TOO_DARK", "TOO_BRIGHT", "BLURRY", "EYES_NOT_WIDE_OPEN"}
 MIN_EYE_DIST_FRAC = 0.16   # the outer corners of the eyes should span at least this share of the photo width
@@ -35,8 +36,10 @@ def iris_enrolled(s) -> bool:
     return bool(ref and any((v or {}).get("quality", {}).get("usable") for v in (ref.iris or {}).values()))
 
 
-def enrol_reference(rt, s, rgb: np.ndarray, raw: bytes) -> dict:
-    """Analyse the uploaded close-up photo (in memory) and keep only the embedding and iris templates. Returns what the customer sees."""
+def analyse_reference(rt, rgb: np.ndarray) -> dict:
+    """Analyse the uploaded close-up photo, in memory. PURE computation (models only, no database access), so it can run in the
+    inference worker pool: a database write from a worker thread would wait for the request's own SQLite lock and fail with
+    'database is locked'. -> the result plus the private fields `_embedding`, `_iris`, `_quality` that save_reference() stores."""
     issues: list[str] = []
     embedding: list[float] = []
     quality: dict = {}
@@ -52,36 +55,55 @@ def enrol_reference(rt, s, rgb: np.ndarray, raw: bytes) -> dict:
             embedding = r["embedding"] if not quality.get("issues") else []
         face_state = "ok" if embedding else "problem"
     iris_packed: dict = {}
+    eye_issues: list[str] = []
     es = rt.registry.get("eyescan")
     if es is not None and es.ensure_loaded():
         t = es.template_from_frame(rgb)
         f = t["face"]
         if f is None:
-            if "NO_FACE" not in issues:
-                issues.append("NO_FACE")
+            eye_issues.append("EYES_NOT_FOUND" if face_state == "ok" else "NO_FACE")
+            iris_state = "problem"
         else:
             quality["eye_distance_fraction"], quality["eye_openness"] = f["eye_dist_frac"], f["ear_mean"]
-            if f["ear_mean"] < WIDE_OPEN_EAR:
-                issues.append("EYES_NOT_WIDE_OPEN")
             if f["eye_dist_frac"] < MIN_EYE_DIST_FRAC:
-                issues.append("FACE_TOO_FAR")
-            for side, tpl in t["eyes"].items():
-                iris_packed[side] = iris.pack(tpl)
-            usable = [side for side, tpl in t["eyes"].items() if tpl["quality"]["usable"]]
-            iris_state = "ok" if usable else "low_detail"
-            if not usable:
-                issues.append("IRIS_DETAIL_LOW")
+                eye_issues.append("FACE_TOO_FAR")
+            if f["ear_mean"] < WIDE_OPEN_EAR:
+                eye_issues.append("EYES_NOT_WIDE_OPEN")  # half-closed lids cover the iris: its code would be noise, so none is kept
+                iris_state = "problem"
+            else:
+                for side, tpl in t["eyes"].items():
+                    iris_packed[side] = iris.pack(tpl)
+                usable = [side for side, tpl in t["eyes"].items() if tpl["quality"]["usable"]]
+                iris_state = "ok" if usable else "low_detail"
+                if not usable:
+                    eye_issues.append("IRIS_DETAIL_LOW")
             quality["iris"] = {side: tpl["quality"] for side, tpl in t["eyes"].items()}
-    issues = list(dict.fromkeys(issues))
+    # EYES_NOT_WIDE_OPEN still blocks: the customer can fix it with one retake and the iris check needs it. EYES_NOT_FOUND (the face
+    # detector found a face but the landmark model could not measure the eyes) is NOT the customer's fault, so it never blocks a
+    # good face reference: face matching works and only the iris check is unavailable for this session.
+    issues = list(dict.fromkeys(issues + eye_issues))
     blocking = [i for i in issues if i in BLOCKING and (face_state != "unavailable" or iris_state != "unavailable")]
-    accepted = not blocking
-    if accepted:
+    return {"accepted": not blocking, "face_check": face_state, "iris_check": iris_state, "issues": issues,
+            "messages": [MESSAGES.get(i, i) for i in issues], "blocking": blocking,
+            "_embedding": embedding, "_iris": iris_packed, "_quality": {**quality, "issues": issues}}
+
+
+def save_reference(s, analysed: dict, raw: bytes) -> dict:
+    """Store an accepted analysis (request thread only). Only the embedding and the iris templates are kept, never the photo.
+    -> what the customer sees (no templates)."""
+    out = {k: v for k, v in analysed.items() if not k.startswith("_")}
+    if out["accepted"]:
+        sha = hashlib.sha256(raw).hexdigest()
         with transaction.atomic():
             ReferencePhoto.objects.update_or_create(session=s, defaults={
-                "face_embedding": embedding, "iris": iris_packed, "quality": {**quality, "issues": issues}, "file_sha256": hashlib.sha256(raw).hexdigest()})
-            append_event(s.id, "reference_photo.recorded", {"face": face_state, "iris": iris_state, "issues": issues, "file_sha256": hashlib.sha256(raw).hexdigest()})
-    return {"accepted": accepted, "face_check": face_state, "iris_check": iris_state, "issues": issues,
-            "messages": [MESSAGES.get(i, i) for i in issues], "blocking": blocking}
+                "face_embedding": analysed["_embedding"], "iris": analysed["_iris"], "quality": analysed["_quality"], "file_sha256": sha})
+            append_event(s.id, "reference_photo.recorded", {"face": out["face_check"], "iris": out["iris_check"], "issues": out["issues"], "file_sha256": sha})
+    return out
+
+
+def enrol_reference(rt, s, rgb: np.ndarray, raw: bytes) -> dict:
+    """analyse_reference + save_reference in the calling thread (scripts and tests)."""
+    return save_reference(s, analyse_reference(rt, rgb), raw)
 
 
 # ---- pose series --------------------------------------------------------------------------------------------------------

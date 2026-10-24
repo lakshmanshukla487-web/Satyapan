@@ -30,15 +30,23 @@ Check the licence of every list that `update_ip_lists.py` downloads before comme
   under `VIDEO_MIN_FACE_PX` is not scored. Its published 92 % accuracy is on a random split of its own training pool (the
   OpenForensics-based "Deepfake and real images" set), not on unseen data; on real webcam-like video it can lean towards "fake".
   Measure it on your own labelled data with `python scripts/eval_video_model.py <folder>` before trusting the threshold.
-* **Face match** compares the live face with the start photo (cosine similarity, 0.363 is the SFace published value). It detects a
-  *different person*. It does not detect a face swap that reproduces the reference person's identity. A downward drift of the
-  similarity during a long session is reported separately.
-* **Iris** compares the coloured ring of the eye from the close-up scan with the start photo. It is **not a retina scan** (a
-  camera cannot see the retina) and is much weaker than near-infrared iris hardware. The thresholds are not calibrated on real
-  data. In synthetic tests the same iris scored a Hamming distance of 0.01 to 0.05 and different irises 0.33 to 0.43, so the
-  0.40 mismatch line labels many impostors "uncertain" instead of "mismatch" (the safe direction for genuine users). Calibrate on
-  real captures before trusting it. A mismatch needs two agreeing readings and raises AMBER; it reaches RED only together with
-  other concerns.
+* **Face match** compares the live face with the start photo: OpenCV YuNet finds the face (a second, padded pass catches faces
+  that fill the picture, which YuNet misses on its own), SFace turns it into a 128-number fingerprint, and the cosine similarity is
+  compared with 0.363 (the published SFace value). Measured through the production code on real people the model was not built for:
+  | test | genuine accepted | impostors accepted |
+  |---|---|---|
+  | DFD actors, start photo and live frames from *different* videos (24 genuine / 1,520 impostor pairs) | 100 % (lowest similarity 0.53) | 0.46 % |
+  | CelebA-HQ, two different photos of the same celebrity (59 / 708 pairs) | 88 % | 0.28 % |
+  It detects a *different person*. It does not detect a face swap that reproduces the reference person's identity. A downward drift
+  of the similarity during a long session is reported separately. Poor images (dark, blurry, small, several faces) are "low quality",
+  never a mismatch.
+* **Iris** compares the coloured ring of the eye from the close-up scan with the start photo (MediaPipe iris landmarks + a classical
+  log-Gabor iris code). It is **not a retina scan** (a camera cannot see the retina). Measured on the CelebA-HQ pairs, irises of
+  40-55 px (about what a webcam eye scan gives) separate people barely better than chance (AUC about 0.62: genuine median Hamming
+  distance 0.38, impostors 0.40), and the old thresholds wrongly called 10 of 59 genuine people a "mismatch". So no match or mismatch
+  verdict is given below `IRIS_MIN_VERDICT_PX` (80 px): the result is "inconclusive", which never counts for or against the customer.
+  The 80 px limit itself is not validated: collect real genuine/impostor eye scans before trusting any iris verdict. A mismatch
+  needs two agreeing readings and raises AMBER; it reaches RED only together with other concerns.
 * **Challenges** continue for the whole session. The browser measures the action, and the server independently measures head pose,
   eye openness and mouth movement on the frames uploaded during the challenge. A browser claim that the server's frames
   contradict counts as a tampering indicator; a pass that only the browser vouches for does not count as liveness proof for GREEN.

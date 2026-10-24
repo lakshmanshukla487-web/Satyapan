@@ -52,8 +52,8 @@ customer is never shown a risk score or a challenge result, so there is nothing 
 | Voice authenticity | fine-tuned wav2vec2 anti-spoof model | judged over **all** clips in the session |
 | Face video authenticity | ViT deepfake classifier | over all frames, the worst quarter and the latest window |
 | Lip sync | SyncNet | supporting only; research-only weights |
-| Face = start photo | OpenCV YuNet + SFace | drift over the session is tracked |
-| Iris = start photo | classical iris code | visible light and uncalibrated; never RED on its own |
+| Face = start photo | OpenCV YuNet + SFace | 88-100 % of genuine pairs accepted, under 0.5 % of impostors on real-photo tests; drift tracked |
+| Iris = start photo | MediaPipe iris landmarks + classical iris code | webcam-size irises are inconclusive by design (see docs); never RED on its own |
 | Liveness (challenges) | browser measurement **cross-checked on the server's own frames** | a contradicted browser claim is a tampering indicator |
 | Spoken words | **Whisper speech-to-text on the server** | the recording is transcribed in memory and not stored |
 | Camera is a real device | rule-based probe | virtual cameras, injected `getUserMedia`, automation |

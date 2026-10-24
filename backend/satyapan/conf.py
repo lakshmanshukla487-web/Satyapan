@@ -115,6 +115,9 @@ class AppSettings:
     # calibrated on real webcam data: collect genuine/impostor pairs before relying on these numbers.
     iris_match_hd: float = 0.32  # at or below this = match
     iris_mismatch_hd: float = 0.40  # at or above this = mismatch (between the two = uncertain, never a fail)
+    # No match/mismatch verdict below this iris diameter (pixels): on real photo pairs with 40-55 px irises the code separated
+    # people barely better than chance (AUC ~0.62). 80 px needs the eye very close to a 1280 px camera and is NOT yet validated.
+    iris_min_verdict_px: float = 80.0
     # Pipeline integrity: IP reputation and camera classification
     enable_ip_check: bool = True
     ip_trusted_proxy_hops: int = 0  # how many reverse proxies in front of Django add X-Forwarded-For (0 = trust none)

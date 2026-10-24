@@ -74,18 +74,29 @@ class XceptionDetector(StubDetector):
     name, signal_type, model_id, reason = "xception", "visual_deepfake", "Arman176/Xception5o", "NOT_INTEGRATED"
 
 
+# The browser uses the very same file (frontend/public/models, committed to the repository): use it when MODEL_DIR has no copy.
+_FRONTEND_LANDMARKER = Path(__file__).resolve().parents[3] / "frontend" / "public" / "models" / "face_landmarker.task"
+
+
+def landmarker_path(model_dir: str) -> Path | None:
+    for p in (Path(model_dir) / "face_landmarker.task", _FRONTEND_LANDMARKER):
+        if p.is_file() and p.stat().st_size > 1_000_000:  # a partial download is not a model
+            return p
+    return None
+
+
 class LandmarkDetector(BaseDetector):
     """MediaPipe Face Landmarker (478 points incl. iris). Reports the server's OWN measurements of the face in each frame: head
     turn, eye openness, mouth opening, closeness. It produces no spoof score: landmarks alone prove nothing about authenticity.
-    Needs MODEL_DIR/face_landmarker.task."""
+    Needs MODEL_DIR/face_landmarker.task (falls back to the identical frontend/public/models copy)."""
     name, signal_type, model_id, score_kind = "landmarks", "landmarks", "mediapipe/face_landmarker", "heuristic_measurement"
 
     def load(self) -> None:
         import mediapipe as mp  # noqa: F401
         from mediapipe.tasks import python as mpp
         from mediapipe.tasks.python import vision
-        path = Path(self.settings.model_dir) / "face_landmarker.task"
-        if not path.is_file():
+        path = landmarker_path(self.settings.model_dir)
+        if path is None:
             raise DetectorError("MODEL_NOT_DOWNLOADED")
         opts = vision.FaceLandmarkerOptions(base_options=mpp.BaseOptions(model_asset_path=str(path)), num_faces=2)
         self._lm = vision.FaceLandmarker.create_from_options(opts)
