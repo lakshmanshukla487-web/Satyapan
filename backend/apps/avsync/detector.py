@@ -28,6 +28,8 @@ class SyncNetDetector(BaseDetector):
         return round((s.syncnet_min_confidence - s.syncnet_bad_confidence) / s.syncnet_min_confidence, 3)
 
     def load(self) -> None:
+        """Runs ONCE, at server start (warm_up): checkpoint, strict layer check, and one dummy pass through both branches so
+        PyTorch's one-off setup is not paid by the first customer clip. After this only _infer runs; a failure is remembered."""
         import torch
         from apps.avsync.syncnet_model import SyncNetS
         path = Path(self.settings.model_dir) / self.settings.syncnet_checkpoint
@@ -44,6 +46,9 @@ class SyncNetDetector(BaseDetector):
             self.load_problem = {"missing": res.missing_keys[:10], "unexpected": res.unexpected_keys[:10]}
             raise DetectorError("CHECKPOINT_MISMATCH")
         self._model = model.eval()
+        with torch.inference_mode():
+            self._model.forward_lip(torch.zeros(1, 3, 5, 224, 224))
+            self._model.forward_aud(torch.zeros(1, 1, 13, 20))
 
     # media = {"frames": [BGR uint8 224x224 x N at 25 fps], "wave": float32 mono 16 kHz}
     def _infer(self, media, metadata):
@@ -59,11 +64,12 @@ class SyncNetDetector(BaseDetector):
         vid = vid.permute(3, 0, 1, 2).unsqueeze(0)                             # 1 x 3 x N x 224 x 224
         last = n - 5
         lip, aud = [], []
-        for i in range(0, last, BATCH):
-            ids = range(i, min(last, i + BATCH))
-            lip.append(self._model.forward_lip(torch.cat([vid[:, :, v:v + 5] for v in ids], 0)))
-            aud.append(self._model.forward_aud(torch.cat([cct[:, :, :, v * 4:v * 4 + 20] for v in ids], 0)))
-        lip, aud = torch.cat(lip, 0), torch.cat(aud, 0)
+        with torch.inference_mode():  # grad mode is per thread: the one set in load() does not reach the request threads
+            for i in range(0, last, BATCH):
+                ids = range(i, min(last, i + BATCH))
+                lip.append(self._model.forward_lip(torch.cat([vid[:, :, v:v + 5] for v in ids], 0)))
+                aud.append(self._model.forward_aud(torch.cat([cct[:, :, :, v * 4:v * 4 + 20] for v in ids], 0)))
+            lip, aud = torch.cat(lip, 0), torch.cat(aud, 0)
         if lip.shape[0] < 5 or aud.shape[0] != lip.shape[0]:
             return self.result("low_quality", error_code="CLIP_TOO_SHORT", details={"windows": int(lip.shape[0])})
         win = VSHIFT * 2 + 1

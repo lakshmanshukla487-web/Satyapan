@@ -30,6 +30,17 @@ Check the licence of every list that `update_ip_lists.py` downloads before comme
   under `VIDEO_MIN_FACE_PX` is not scored. Its published 92 % accuracy is on a random split of its own training pool (the
   OpenForensics-based "Deepfake and real images" set), not on unseen data; on real webcam-like video it can lean towards "fake".
   Measure it on your own labelled data with `python scripts/eval_video_model.py <folder>` before trusting the threshold.
+* **Lip sync (SyncNet)** is loaded once at server start (strict layer check plus one warm-up pass) and only runs inference
+  afterwards: about 3 s for a 4 s clip on a laptop CPU. Measured through the production upload path on 30 real talking-head clips
+  (HDTF, one per speaker, sent the way the browser sends them):
+  | condition | verdicts | confidence | flagged |
+  |---|---|---|---|
+  | genuine voice and lips | in sync 30/30 | 4.9-10.1 (median 7.9) | 0 % |
+  | voice delayed by 320 ms | shifted 30/30 | median 7.6 | 100 % |
+  | another person's voice | weak sync 20, shifted 8, no relation 2 | 0.6-3.1 (median 1.7) | 33 % |
+  The confidence separates genuine from dubbed completely on this data, but the flag line (`SYNCNET_BAD_CONFIDENCE`, 1.0) is kept
+  conservative: studio clips score higher than webcam calls, so measure genuine webcam sessions before raising it. The weights are
+  **research-only** (see the table above).
 * **Face match** compares the live face with the start photo: OpenCV YuNet finds the face (a second, padded pass catches faces
   that fill the picture, which YuNet misses on its own), SFace turns it into a 128-number fingerprint, and the cosine similarity is
   compared with 0.363 (the published SFace value). Measured through the production code on real people the model was not built for:

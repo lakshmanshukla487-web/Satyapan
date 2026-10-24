@@ -18,15 +18,18 @@ def resample_to_grid(times: list[float], n_frames: int, duration: float) -> np.n
     return idx
 
 
-def _box_track(boxes: list, n: int) -> tuple[np.ndarray, float]:
-    """Fill gaps (None) by linear interpolation and smooth with a short moving average. -> (n,3) of x,y,half-size, coverage."""
+def _box_track(boxes: list, n: int, checked: list[int] | None = None) -> tuple[np.ndarray, float]:
+    """Fill gaps (None) by linear interpolation and smooth with a short moving average. -> (n,3) of x,y,half-size, coverage.
+    coverage = share of the CHECKED frames (the detector runs on every `stride`-th frame only) in which a face was found. It used
+    to be measured over all frames, which capped it at 1/stride (0.34) < MIN_FACE_COVERAGE: every clip was refused as NO_FACE."""
     arr = np.full((n, 3), np.nan)
     for i, b in enumerate(boxes):
         if b is not None:
             x, y, w, h = b
             arr[i] = (x + w / 2.0, y + h / 2.0, max(w, h) / 2.0)
     have = ~np.isnan(arr[:, 0])
-    coverage = float(have.mean()) if n else 0.0
+    checked = list(range(n)) if checked is None else checked
+    coverage = float(have[checked].mean()) if checked else 0.0
     if have.sum() < 2:
         return arr, coverage
     xs = np.arange(n)
@@ -48,7 +51,7 @@ def crop_faces(frames_rgb: list[np.ndarray], detect, stride: int = 3) -> tuple[l
         if faces:
             x, y, w, h = faces[0]["box"]
             boxes[i] = (x, y - 0.1 * h, w, h * 1.15)  # the detector box starts at the brows: add the forehead and chin
-    track, coverage = _box_track(boxes, n)
+    track, coverage = _box_track(boxes, n, list(range(0, n, stride)))
     info = {"face_coverage": round(coverage, 3), "frames": n}
     if coverage < MIN_FACE_COVERAGE or np.isnan(track).any():
         return None, info
