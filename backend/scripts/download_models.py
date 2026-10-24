@@ -58,7 +58,7 @@ if a.all or a.video:
     def _video():
         from huggingface_hub import snapshot_download
         print(f"  {VIDEO_REPO} (check the model card licence before deployment)")
-        snapshot_download(VIDEO_REPO, local_dir=root / "video")
+        snapshot_download(VIDEO_REPO, local_dir=root / "video", allow_patterns=["config.json", "preprocessor_config.json", "model.safetensors", "README.md"])  # not the training checkpoints
     step("video deepfake model", _video)
 if a.all or a.faces:
     for name, url in FILES.items():

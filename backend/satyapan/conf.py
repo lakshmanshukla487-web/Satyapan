@@ -98,6 +98,9 @@ class AppSettings:
     video_model_repo: str = "prithivMLmods/Deep-Fake-Detector-v2-Model"
     video_fake_label_index: int = -1  # only if the model's label map is ambiguous: the class index that means "fake"
     video_flag_threshold: float = 0.7
+    video_crop_margin: float = 0.25  # square face crop: this share of the face size is added on every side (training images were face crops)
+    video_tta_flip: bool = True      # also classify the mirrored crop and average (test-time augmentation)
+    video_min_face_px: int = 64      # faces smaller than this (in the uploaded 640 px frame) are not scored: too little detail
     # Audio-video sync (SyncNet, VGG-M variant)
     syncnet_checkpoint: str = "syncnet/syncnet_v2.model"  # relative to MODEL_DIR
     syncnet_min_confidence: float = 4.0  # SyncNet confidence at or above this is "in sync"

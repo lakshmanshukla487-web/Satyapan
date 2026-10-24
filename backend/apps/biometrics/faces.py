@@ -129,16 +129,25 @@ def engine_or_none(model_dir: str) -> FaceEngine | None:
         return None
 
 
-def crop_face(rgb: np.ndarray, model_dir: str, margin: float = 0.3) -> tuple[np.ndarray, dict]:
-    """Largest face with a margin, for the video deepfake model. Falls back to the whole frame (and says so)."""
+def square_face_crop(rgb: np.ndarray, model_dir: str, margin: float, min_face_px: int) -> tuple[np.ndarray | None, dict]:
+    """Square crop centred on the largest face, `margin` x face size added on every side (reflect-padded where it leaves the
+    frame), for the video deepfake model. -> (crop, info), or (None, info with reason FACE_ENGINE_UNAVAILABLE / NO_FACE /
+    FACE_TOO_SMALL) when the frame must not be scored."""
     eng = engine_or_none(model_dir)
     if eng is None:
-        return rgb, {"crop": "none", "reason": "FACE_ENGINE_UNAVAILABLE"}
+        return None, {"crop": "none", "reason": "FACE_ENGINE_UNAVAILABLE"}
     faces = eng.detect(rgb)
     if not faces:
-        return rgb, {"crop": "none", "reason": "NO_FACE"}
+        return None, {"crop": "none", "reason": "NO_FACE"}
     x, y, w, h = faces[0]["box"]
+    face_px = int(round(max(w, h)))
+    info = {"crop": "face_square", "faces_in_frame": len(faces), "face_px": face_px, "margin": margin}
+    if face_px < min_face_px:
+        return None, {**info, "crop": "none", "reason": "FACE_TOO_SMALL"}
     H, W = rgb.shape[:2]
-    mx, my = w * margin, h * margin
-    x0, y0, x1, y1 = int(max(0, x - mx)), int(max(0, y - my)), int(min(W, x + w + mx)), int(min(H, y + h + my))
-    return rgb[y0:y1, x0:x1], {"crop": "face", "faces_in_frame": len(faces)}
+    side = int(round(face_px * (1 + 2 * margin)))
+    x0, y0 = int(round(x + w / 2 - side / 2)), int(round(y + h / 2 - side / 2))
+    pad = max(0, -x0, -y0, x0 + side - W, y0 + side - H)
+    if pad:
+        rgb = np.pad(rgb, ((pad, pad), (pad, pad), (0, 0)), mode="reflect" if pad < min(H, W) else "edge")
+    return rgb[y0 + pad:y0 + pad + side, x0 + pad:x0 + pad + side], info

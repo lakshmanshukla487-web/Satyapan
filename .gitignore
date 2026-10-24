@@ -128,7 +128,7 @@ desktop.ini
 *.swp
 *.swo
 *~
-.claude/settings.local.json
+.claude/
 
 # ---- Temporary files and archives ---------------------------------------------------------------------------------------------
 *.part

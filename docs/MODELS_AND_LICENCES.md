@@ -9,7 +9,7 @@ processes (`pip install -r requirements-optional.txt`).
 | Purpose | Model | Where it lives | Licence | Commercial use |
 |---|---|---|---|---|
 | Voice anti-spoof | your fine-tuned wav2vec2 | `models/audio/` (copy `model.safetensors`) | yours | yours to decide (base model licence applies) |
-| Face video deepfake | `prithivMLmods/Deep-Fake-Detector-v2-Model` (ViT) | `model_cache/` via `download_models.py --video` | Apache-2.0 | yes |
+| Face video deepfake | `prithivMLmods/Deep-Fake-Detector-v2-Model` (ViT) | `models/video/` via `download_models.py --video` (needs `--faces` for the crop) | Apache-2.0 | yes |
 | Lip sync | SyncNet (S) | `models/syncnet/syncnet_v2.model` via `--syncnet` | **research-only** weights | **no**: replace, retrain or disable (`ENABLE_SYNCNET=false`) |
 | Face detect + recognise | OpenCV YuNet + SFace | `models/` via `--faces` | MIT / Apache-2.0 | yes |
 | Landmarks (pose, blink, eye geometry) | MediaPipe Face Landmarker | `models/face_landmarker.task` | Apache-2.0 | yes |
@@ -24,6 +24,12 @@ Check the licence of every list that `update_ip_lists.py` downloads before comme
 * **Voice, video, lip sync** produce an uncalibrated score. The policy judges them over every sample in the session: the flagged
   fraction, the worst quarter of samples and the latest samples (so a mid-session switch to a fake is caught). A single sample
   never clears or condemns a family. Poor input quality gives GREY for that family.
+* **Face video deepfake (ViT)** is loaded once at server start together with the face detector, and warmed up with one dummy
+  inference; afterwards each uploaded frame only runs inference (about 0.5 s per frame on a laptop CPU with mirror averaging).
+  Each frame is cropped to a square around the largest face (the model was trained on face crops); a frame with no face or a face
+  under `VIDEO_MIN_FACE_PX` is not scored. Its published 92 % accuracy is on a random split of its own training pool (the
+  OpenForensics-based "Deepfake and real images" set), not on unseen data; on real webcam-like video it can lean towards "fake".
+  Measure it on your own labelled data with `python scripts/eval_video_model.py <folder>` before trusting the threshold.
 * **Face match** compares the live face with the start photo (cosine similarity, 0.363 is the SFace published value). It detects a
   *different person*. It does not detect a face swap that reproduces the reference person's identity. A downward drift of the
   similarity during a long session is reported separately.
