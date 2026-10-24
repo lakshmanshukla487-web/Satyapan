@@ -13,6 +13,7 @@ processes (`pip install -r requirements-optional.txt`).
 | Lip sync | SyncNet (S) | `models/syncnet/syncnet_v2.model` via `--syncnet` | **research-only** weights | **no**: replace, retrain or disable (`ENABLE_SYNCNET=false`) |
 | Face detect + recognise | OpenCV YuNet + SFace | `models/` via `--faces` | MIT / Apache-2.0 | yes |
 | Landmarks (pose, blink, eye geometry) | MediaPipe Face Landmarker | `models/face_landmarker.task` | Apache-2.0 | yes |
+| Speech-to-text (spoken-words challenge) | `openai/whisper-base` (Whisper) | `models/speech/` via `download_models.py --speech` | MIT | yes |
 | Iris code | classical log-Gabor (own code, numpy/scipy) | none | project licence | yes |
 | Camera / IP checks | rules + CIDR lists (`scripts/update_ip_lists.py`) + optional proxycheck.io / IPQS | `data/ip/` | list licences vary: read each source | check the list source |
 

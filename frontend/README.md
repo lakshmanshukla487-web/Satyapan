@@ -20,7 +20,7 @@ face model, which the head-turn and blink challenges need.
 | `/dashboard` | customer | Own sessions with plain-language status (never a risk outcome) |
 | `/verify` | customer | Consent → Documents → Live check (challenges released by an officer) |
 | `/officer` | officer | Review console: live sessions, approval queue, risk, documents |
-| `/sessions/:id` | officer | Approval panel, KYC documents, signals, **End session now** |
+| `/sessions/:id` | officer | Live video call and chat, challenge approval, KYC documents, signals, **Finish verification**, **End session now** |
 | `/sessions/:id/report`, `/sessions/:id/evidence` | officer | Frozen report; hash-chained evidence |
 
 ## Structure

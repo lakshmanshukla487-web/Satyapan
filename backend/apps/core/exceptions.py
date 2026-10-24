@@ -12,8 +12,11 @@ from apps.core.errors import AppError
 log = logging.getLogger("satyapan")
 
 
-def error_body(request, code: str, message: str) -> dict:
-    return {"error": {"code": code, "message": message, "request_id": getattr(request, "request_id", None)}}
+def error_body(request, code: str, message: str, retry_after: int | None = None) -> dict:
+    err = {"code": code, "message": message, "request_id": getattr(request, "request_id", None)}
+    if retry_after is not None:
+        err["retry_after"] = int(retry_after)
+    return {"error": err}
 
 
 def _first_validation_message(detail) -> str:
@@ -35,8 +38,9 @@ def _first_validation_message(detail) -> str:
 def api_exception_handler(exc, context):
     request = context.get("request")
     raw = getattr(request, "_request", request)
+    retry_after = None
     if isinstance(exc, AppError):
-        status, code, msg = exc.status_code, exc.code, exc.message
+        status, code, msg, retry_after = exc.status_code, exc.code, exc.message, exc.retry_after
     elif isinstance(exc, (drf.NotAuthenticated, drf.AuthenticationFailed)):
         status, code, msg = 401, "UNAUTHENTICATED", str(exc.detail) if isinstance(exc, drf.AuthenticationFailed) else "Authentication is required."
     elif isinstance(exc, drf.PermissionDenied):
@@ -70,8 +74,10 @@ def api_exception_handler(exc, context):
                   getattr(raw, "request_id", None), exc_info=exc)
         status, code, msg = 500, "INTERNAL_ERROR", "An unexpected error occurred."
     set_rollback()
-    headers = {"WWW-Authenticate": exc.auth_header} if getattr(exc, "auth_header", None) else None
-    return Response(error_body(raw, code, msg), status=status, headers=headers)
+    headers = {"WWW-Authenticate": exc.auth_header} if getattr(exc, "auth_header", None) else {}
+    if retry_after is not None:
+        headers["Retry-After"] = str(int(retry_after))
+    return Response(error_body(raw, code, msg, retry_after), status=status, headers=headers or None)
 
 
 def json_404(request, exception=None):

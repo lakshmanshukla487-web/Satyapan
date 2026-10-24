@@ -5,6 +5,7 @@ import { SessionSocket } from '../services/websocketClient'
 import type { WsEvent, WsState } from '../types'
 /** The customer's own channel: approval result, released challenges, live-call signalling, chat and the neutral end-of-session
  *  message. Returns the socket state and a `send` for call/chat messages. Real backend only. */
+ 
 export function useCustomerChannel(sessionId: string | null, onEvent: (e: WsEvent) => void): { state: WsState; send: (event: string, data?: Record<string, unknown>) => boolean } {
   const cb = useRef(onEvent)
   cb.current = onEvent

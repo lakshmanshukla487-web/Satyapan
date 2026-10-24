@@ -41,6 +41,23 @@ def upload(request, session_id, doc_type):
 @extend_schema(tags=["documents"], request=None, responses={200: dict})
 @api_view(["POST"])
 @permission_classes([IsCustomer])
+def remove(request, session_id, doc_type):
+    """Remove one submitted document so the customer can correct a mistake (wrong file or wrong document) without starting over.
+    Only while documents may still be changed (after consent, before the live check starts). Clears the document, everything
+    derived from its file, and the last document check (the documents must be submitted again)."""
+    if doc_type not in FIELDS:
+        raise AppError("UNKNOWN_DOCUMENT_TYPE", "Unknown document type.", 404)
+    s = get_owned(session_id, request.user)
+    _editable(s)
+    out = services.remove_document(s, doc_type)
+    if out["removed"]:
+        audit(request, "customer.remove_document", session_id=s.id, doc_type=doc_type)
+    return Response({**out, "status": "not_submitted"})
+
+
+@extend_schema(tags=["documents"], request=None, responses={200: dict})
+@api_view(["POST"])
+@permission_classes([IsCustomer])
 def submit(request, session_id):
     """Run the cross-document verification. The customer only learns whether something needs fixing."""
     s = get_owned(session_id, request.user)

@@ -16,11 +16,11 @@ log = logging.getLogger("satyapan")
 
 EVENTS = ("session.status", "challenge.pending", "challenge.approved", "challenge.released", "challenge.issued", "challenge.result",
           "detector.started", "detector.completed", "detector.unavailable", "signal.updated", "risk.updated", "analysis.completed",
-          "document.uploaded", "documents.checked", "session.terminated", "session.requested", "session.approved", "session.rejected",
+          "document.uploaded", "document.removed", "documents.checked", "session.terminated", "session.requested", "session.approved", "session.rejected",
           "biometric.updated", "rtc.signal", "call.request", "call.accept", "call.decline", "call.end", "chat.message", "error")
 OFFICERS_GROUP = "officers"
 # Events the officer-wide feed also receives (the dashboard reloads on them).
-FEED_EVENTS = frozenset({"session.requested", "session.status", "challenge.pending", "challenge.approved", "session.terminated", "documents.checked", "document.uploaded", "risk.updated"})
+FEED_EVENTS = frozenset({"session.requested", "session.status", "challenge.pending", "challenge.approved", "session.terminated", "documents.checked", "document.uploaded", "document.removed", "risk.updated"})
 
 
 def group_name(session_id) -> str:

@@ -49,6 +49,8 @@ daphne -b 0.0.0.0 -p 8000 satyapan.asgi:application &
 BACK=$!
 trap 'kill $BACK 2>/dev/null' EXIT INT TERM
 cd ../frontend
+# Without frontend/.env the app falls back to demo (mock) mode; the example file sets VITE_USE_MOCKS=false (real backend).
+[ -f .env ] || cp .env.example .env
 [ -d node_modules ] || npm install
 
 if [ -f certs/lan.crt ] && [ -f certs/lan.key ]; then

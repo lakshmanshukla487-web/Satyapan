@@ -1,0 +1,143 @@
+# ==========================================================================================================================
+# Satyapan: one .gitignore for the whole repository (backend, frontend, e2e, docs).
+#
+# Commit: source code, migrations, configuration templates (.env.example), small model configs, docs.
+# Never commit: secrets, databases, certificates, model weights, customer media, generated assets, local tool state.
+# ==========================================================================================================================
+
+# ---- Secrets and local configuration -------------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+local_settings.py
+
+# ---- TLS certificates and keys (generated per machine by setup-https.sh / setup-https.ps1) --------------------------------
+frontend/certs/
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# ---- Python -------------------------------------------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---- Django: databases and runtime data ---------------------------------------------------------------------------------
+*.db
+*.sqlite3
+*.sqlite3-journal
+*.db.bak*
+*.sqlite3.bak*
+media/
+staticfiles/
+logs/
+*.log
+backend/devlab_data/
+devlab_data/
+datasets/
+
+# IP reputation lists: downloaded by `python scripts/update_ip_lists.py` (each source has its own licence)
+backend/data/ip/*
+!backend/data/ip/README.txt
+
+# ---- AI models (large, licensed separately; downloaded or copied on each machine, see README) ----------------------------
+backend/model_cache/
+model_cache/
+.cache/
+backend/models/*
+!backend/models/.gitkeep
+# The fine-tuned voice model: its small configs are committed, the weights (model.safetensors) are copied in by hand
+!backend/models/audio/
+backend/models/audio/*
+!backend/models/audio/config.json
+!backend/models/audio/preprocessor_config.json
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+*.bin
+*.h5
+*.tflite
+# Training exports and Google Drive downloads of checkpoints
+drive-download-*/
+training_history.csv
+# (frontend/public/models/face_landmarker.task, 3.7 MB, IS committed so the browser challenges work right after cloning)
+
+# ---- Customer media and test recordings: personal data, never in Git ---------------------------------------------------------
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.webm
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ---- Node / frontend ----------------------------------------------------------------------------------------------------------
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# Copied from node_modules by `npm run setup:assets` (runs automatically before dev and build)
+frontend/public/mediapipe-wasm/
+
+# ---- End-to-end tests (Playwright) --------------------------------------------------------------------------------------------
+e2e/.e2e_files/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ---- Editors, OS and tools ----------------------------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.claude/settings.local.json
+
+# ---- Temporary files and archives ---------------------------------------------------------------------------------------------
+*.part
+*.tmp
+*.temp
+*.bak
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar

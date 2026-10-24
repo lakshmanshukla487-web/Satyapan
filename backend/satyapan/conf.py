@@ -39,7 +39,12 @@ class AppSettings:
     max_image_dimension: int = 4096
     max_concurrent_inferences: int = 2
     retain_raw_media: bool = False
-    rate_limit_per_minute: int = 120
+    # Request rate limits (see apps/core/middleware.py). Signed-in users are limited per ACCOUNT, so several customers behind one
+    # LAN / NAT address do not share a bucket; requests without a valid token are limited per client address.
+    rate_limit_per_minute: int = 120            # requests without a valid sign-in, per client address
+    rate_limit_user_per_minute: int = 300       # API requests of one signed-in account
+    rate_limit_media_per_minute: int = 600      # frame / audio / lip-sync / eye-scan / developer-test uploads of one account
+    rate_limit_ip_ceiling_per_minute: int = 3000  # everything from one address together (abuse ceiling for shared networks)
     challenge_ttl_seconds: int = 60
     policy_version: str = "v3"
     auth_token_ttl_minutes: int = 720
@@ -117,10 +122,29 @@ class AppSettings:
     # Live call (officer sees and talks to the customer): WebRTC. STUN finds the public address; TURN relays media when a
     # direct connection is impossible (strict firewalls). Leave TURN empty for same-network or demo use.
     enable_live_call: bool = True
+    # 'Say three words' challenge: the phrase is recorded and transcribed on the server (Whisper, CPU, in memory only).
+    # Download once with `python scripts/download_models.py --speech` (into MODEL_DIR/speech).
+    enable_speech_check: bool = True
+    speech_model_repo: str = "openai/whisper-base"
     stun_urls: str = "stun:stun.l.google.com:19302"  # comma separated; the BROWSER contacts these, not this server
     turn_urls: str = ""
     turn_username: str = ""
     turn_credential: str = ""
+    # Developer model test lab (offline evaluation of the deepfake detectors; developer accounts only). Uploaded test media is
+    # kept in DEVLAB_STORAGE_DIR only while a job needs it (outside any public/static folder) and deleted afterwards.
+    enable_devlab: bool = True
+    devlab_storage_dir: str = "./devlab_data"
+    devlab_dataset_dir: str = ""                 # optional root of authorised local test datasets (one sub-folder per dataset)
+    devlab_max_items_per_job: int = 200
+    devlab_max_job_mb: int = 1000                # total upload size of one job
+    devlab_max_active_jobs: int = 2              # queued + running jobs per developer
+    devlab_max_concurrent_jobs: int = 1          # jobs executed at the same time by one server process
+    devlab_max_video_seconds: int = 120
+    devlab_max_audio_seconds: int = 60
+    devlab_video_frames: int = 16                # frames sampled evenly from a test video (upper bound 64)
+    devlab_retention_hours: int = 24             # finished jobs and their results are deleted after this long
+    devlab_live_reserve: int = 2                 # inference-queue slots always left free for live customer sessions
+    devlab_run_inline: bool = False              # tests only: run a job inside the request instead of a background thread
 
     def __post_init__(self):
         if self.retain_raw_media:

@@ -40,6 +40,24 @@ def test_list_pagination_filter(client):
 
 
 def test_rate_limit(make_client):
-    c = make_client(rate_limit_per_minute=2)
+    """RATE_LIMIT_PER_MINUTE now limits requests WITHOUT a sign-in (per address); a signed-in account is limited per account by
+    RATE_LIMIT_USER_PER_MINUTE (more in test_rate_limits.py)."""
+    from tests.conftest import Client
+    c = make_client(rate_limit_per_minute=2, rate_limit_user_per_minute=2)
     c.get("/health"), c.get("/health")
     assert c.get("/health").status_code == 429
+    anon = Client()
+    anon.get("/health"), anon.get("/health")
+    r = anon.get("/health")
+    assert r.status_code == 429 and r.json()["error"]["code"] == "RATE_LIMITED" and int(r["Retry-After"]) >= 1
+
+
+def test_officer_finishes_a_running_session(client):
+    sid = client.post("/api/v1/sessions").json()["id"]
+    assert client.officer.post(f"/api/v1/sessions/{sid}/finish").status_code == 409  # not running yet
+    sid = running_session(client)
+    assert client.post(f"/api/v1/sessions/{sid}/finish").status_code == 403  # customers cannot use the officer's finish
+    r = client.officer.post(f"/api/v1/sessions/{sid}/finish")
+    assert r.status_code == 200 and r.json()["status"] == "completed"
+    assert client.get(f"/api/v1/sessions/{sid}").json()["status"] == "completed"
+    assert client.officer.post(f"/api/v1/sessions/{sid}/finish").status_code == 409

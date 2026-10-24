@@ -40,6 +40,18 @@ async def test_websocket_rejects_unknown_session_and_foreign_origin(client):
     sid = (await sync_to_async(client.post)("/api/v1/sessions")).json()["id"]
     connected, _ = await comm(f"/ws/sessions/{sid}", tok, headers=[(b"origin", b"http://evil.example")]).connect()
     assert not connected
+    connected, _ = await comm(f"/ws/sessions/{sid}", tok, headers=[(b"origin", b"https://evil.example:5173")]).connect()
+    assert not connected
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_websocket_accepts_https_and_lan_dev_origins(client):
+    """Development: the Vite dev server runs on https (setup-https.sh) at localhost or the machine's LAN address."""
+    sid = (await sync_to_async(client.post)("/api/v1/sessions")).json()["id"]
+    for origin in (b"https://localhost:5173", b"https://192.168.18.117:5173", b"https://10.194.28.26:5173"):
+        c = comm(f"/ws/sessions/{sid}", client.officer.token, headers=[(b"origin", origin)])
+        assert (await c.connect())[0], origin
+        await c.disconnect()
 
 
 @pytest.mark.django_db(transaction=True)

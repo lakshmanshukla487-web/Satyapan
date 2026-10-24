@@ -5,9 +5,11 @@ from rest_framework.response import Response
 
 from apps.accounts.auth import IsOfficer
 from apps.core.audit import audit
+from apps.core.errors import AppError
 from apps.decision_engine.services import current_decision
 from apps.evidence.hashing import verify_chain
-from apps.evidence.services import build_packet, list_events, verify_stored
+from apps.evidence.models import EvidenceEvent
+from apps.evidence.services import build_packet, event_dict, list_events, verify_stored
 from apps.verification.services import get_or_404
 
 
@@ -38,7 +40,21 @@ class EvidenceVerifyOut(serializers.Serializer):  # documentation only
 @api_view(["GET"])
 @permission_classes([IsOfficer])
 def evidence(request, session_id):
+    """The session's evidence chain. ?tail=N returns only the newest N events (the live workspace polls this; the full chain and
+    its verification stay available without the parameter). Reading the full chain is audited; the live tail view is not, so a
+    watching officer does not write an audit row every few seconds."""
     s = get_or_404(session_id)
+    raw_tail = request.query_params.get("tail")
+    if raw_tail is not None:
+        try:
+            tail = int(raw_tail)
+        except ValueError:
+            raise AppError("VALIDATION_ERROR", "tail must be an integer.", 422)
+        if not 1 <= tail <= 500:
+            raise AppError("VALIDATION_ERROR", "tail is out of range (1-500).", 422)
+        rows = list(EvidenceEvent.objects.filter(session_id=s.id).order_by("-seq")[:tail])
+        total = EvidenceEvent.objects.filter(session_id=s.id).count()
+        return Response({"session_id": str(s.id), "events": [event_dict(e) for e in reversed(rows)], "total": total, "partial": total > len(rows)})
     audit(request, "officer.read_evidence", session_id=s.id)
     return Response({"session_id": str(s.id), "events": list_events(s.id), "verification": verify_stored(s.id)})
 

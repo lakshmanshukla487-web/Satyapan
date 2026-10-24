@@ -30,6 +30,24 @@ def clean_input(data) -> dict:
     return {k: str(data.get(k))[:100] for k in ALL_FIELD_NAMES if data.get(k) is not None}
 
 
+def _clear_derived(s, doc_type: str) -> int:
+    """Forget everything that was derived from the PREVIOUS file of this document type, so a replaced or removed file can never
+    be reused: the face embedding taken from the document photo, and the provenance results of the old file (kept in the
+    evidence history, but marked superseded so the decision engine and the officer's signal cards ignore them).
+    Returns the number of superseded provenance results. Must run inside the caller's transaction."""
+    from apps.biometrics.models import Observation  # lazy: biometrics depends on documents
+    from apps.signals.models import DetectorSignal
+    Observation.objects.filter(session=s, kind="doc_face", data__doc_type=doc_type).delete()
+    n = 0
+    for sig in DetectorSignal.objects.filter(session=s, detector_name="provenance"):
+        d = sig.details or {}
+        if d.get("doc_type") == doc_type and not d.get("superseded"):
+            sig.details = {**d, "superseded": True, "superseded_at": timezone.now().isoformat()}
+            sig.save(update_fields=["details"])
+            n += 1
+    return n
+
+
 def process_upload(s, doc_type: str, data: dict, file_bytes: bytes | None) -> tuple[KycDocument, list[dict]]:
     cfg = get_runtime().settings
     fields, number, problems = check_document(doc_type, data)
@@ -43,12 +61,17 @@ def process_upload(s, doc_type: str, data: dict, file_bytes: bytes | None) -> tu
             if kind != "pdf" and cfg.enable_document_ocr:
                 ocr_result = ocr_mod.check_image(file_bytes, number, fields.get("name"))
     with transaction.atomic():
+        previous = KycDocument.objects.filter(session=s, doc_type=doc_type).values_list("file_sha256", flat=True).first()
+        superseded = _clear_derived(s, doc_type)  # results of the replaced file must never be reused
         doc, _ = KycDocument.objects.update_or_create(session=s, doc_type=doc_type, defaults={
             "info": fields, "problems": problems, "id_hash": id_hash(doc_type, number) if number else "", "file_sha256": sha, "file_kind": kind, "ocr": ocr_result})
         DocumentCheck.objects.filter(session=s).delete()  # any change means the documents must be submitted again
-        append_event(s.id, "document.uploaded", {"doc_type": doc_type, "file_sha256": sha, "problems": [p["code"] for p in problems]})
+        ev = {"doc_type": doc_type, "file_sha256": sha, "problems": [p["code"] for p in problems]}
+        if previous is not None:
+            ev.update(replaced=True, previous_file_sha256=previous or None, superseded_results=superseded)
+        append_event(s.id, "document.uploaded", ev)
     if file_bytes is not None and kind != "none":
-        run_detectors(s, ["provenance"], file_bytes, [], extra_details={"doc_type": doc_type})  # family 6; a no-op if disabled
+        run_detectors(s, ["provenance"], file_bytes, [], extra_details={"doc_type": doc_type, "file_sha256": sha})  # family 6; a no-op if disabled
         if kind != "pdf" and doc_type in FACE_DOCS:
             try:  # the face printed on the document, kept as an embedding only
                 from apps.biometrics.services import record_document_face
@@ -60,6 +83,25 @@ def process_upload(s, doc_type: str, data: dict, file_bytes: bytes | None) -> tu
                 logging.getLogger("satyapan").warning("document face step skipped: %s", type(e).__name__)
     publish(s.id, "document.uploaded", {"doc_type": doc_type, "problems": len(problems)})
     return doc, problems
+
+
+def remove_document(s, doc_type: str) -> dict:
+    """The customer takes a document back (wrong file, wrong document type, an optional document they no longer want to give).
+    Files are never stored, so there is no file to delete: what is removed is everything kept ABOUT the document (the sanitised
+    fields, the masked number and keyed hash, the file's SHA-256, the OCR result, the face embedding from its photo) plus the
+    last document check, which is now out of date. The removal itself is recorded in the evidence chain (type and the old
+    file's hash only). Idempotent: removing a document that is not there reports removed=false."""
+    with transaction.atomic():
+        doc = KycDocument.objects.select_for_update().filter(session=s, doc_type=doc_type).first()
+        if doc is None:
+            return {"doc_type": doc_type, "removed": False}
+        old_sha = doc.file_sha256
+        superseded = _clear_derived(s, doc_type)
+        doc.delete()
+        DocumentCheck.objects.filter(session=s).delete()  # the documents must be submitted (checked) again
+        append_event(s.id, "document.removed", {"doc_type": doc_type, "file_sha256": old_sha or None, "superseded_results": superseded})
+    publish(s.id, "document.removed", {"doc_type": doc_type})
+    return {"doc_type": doc_type, "removed": True}
 
 
 def _missing(docs: dict) -> list[str]:
@@ -125,7 +167,8 @@ def customer_view(s) -> dict:
     check = DocumentCheck.objects.filter(session=s).first()
     docs = KycDocument.objects.filter(session=s)
     return {"documents": [{"doc_type": d.doc_type, "accepted": not any(p["severity"] == "error" for p in d.problems),
-                           "problems": [p for p in d.problems]} for d in docs],
+                           "problems": [p for p in d.problems], "has_file": bool(d.file_sha256), "file_kind": d.file_kind,
+                           "updated_at": d.updated_at} for d in docs],
             "status": CUSTOMER_STATUS[check.status] if check else "not_submitted",
             "required": {"always": ["applicant", "pan"], "one_of": list(OVD_TYPES), "optional": ["address_proof", "cancelled_cheque"]}}
 

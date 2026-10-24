@@ -8,14 +8,16 @@ import {
   YAxis,
 } from "recharts";
 import { Card, SectionTitle } from "../ui";
-import type { RiskTier, VerificationSession } from "../../types";
+import type { RiskTier } from "../../types";
+
 const colors: Record<RiskTier, string> = {
   GREEN: "#34d399",
   AMBER: "#fbbf24",
   RED: "#f87171",
   GREY: "#94a3b8",
 };
-export function TierChart({ sessions }: { sessions: VerificationSession[] }) {
+
+export function TierChart({ sessions }: { sessions: { tier: RiskTier }[] }) {
   const data = (["GREEN", "AMBER", "RED", "GREY"] as RiskTier[]).map((t) => ({
     tier: t,
     count: sessions.filter((s) => s.tier === t).length,

@@ -121,3 +121,49 @@ def test_server_cross_check_overrules_a_faked_head_turn():
     assert r == "passed" and d["verification"] == "server_confirmed"   # the server saw it even though the browser reported nothing
     r, d = cs.evaluate(c, faked, None)
     assert r == "passed" and d["verification"] == "client_only"
+
+
+def test_officer_choice_replaces_the_open_challenge(client):
+    """'Send to customer' must win: the generated challenge that was still open is closed (not counted as missed)."""
+    sid = running_session(client)
+    generated = client.post(f"{S}/{sid}/challenges").json()
+    chosen = client.officer.post(f"{S}/{sid}/challenges/issue", json={"type": "phrase"}).json()
+    assert chosen["challenge_type"] == "phrase"
+    rows = {x["id"]: x for x in client.officer.get(f"{S}/{sid}/challenges").json()}
+    assert rows[generated["id"]]["status"] == "expired" and rows[generated["id"]]["approval_status"] == "regenerated"
+    again = client.post(f"{S}/{sid}/challenges")  # the customer's page asks for "the open one": it gets the officer's choice
+    assert again.status_code == 200 and again.json()["id"] == chosen["id"]
+
+
+def _phrase_upload(client, sid, cid, spoken=None, silent=False):
+    from tests.conftest import wav_bytes
+    return client.post(f"{S}/{sid}/challenges/{cid}/phrase", files={"file": ("p.wav", wav_bytes(1.0, silent=silent), "audio/wav")},
+                       fields={"spoken_text": spoken} if spoken else None)
+
+
+def test_phrase_is_judged_on_the_server_transcript(client, monkeypatch):
+    from apps.challenges import speech
+    sid = running_session(client)
+    ch = client.officer.post(f"{S}/{sid}/challenges/issue", json={"type": "phrase"}).json()
+    words = ch["challenge_text"].removeprefix("Say aloud: ")
+    monkeypatch.setattr(speech, "transcribe", lambda wave, sr: (words.lower() + ".", "ok"))
+    r = _phrase_upload(client, sid, ch["id"], spoken="something else entirely")  # the browser's text is not trusted over the server's
+    assert r.status_code == 200 and "result" not in r.json()
+    seen = next(x for x in client.officer.get(f"{S}/{sid}/challenges").json() if x["id"] == ch["id"])
+    assert seen["result"] == "passed" and seen["verification"] == "server_confirmed"
+
+
+def test_phrase_without_speech_model_falls_back_to_the_browser(client, monkeypatch):
+    from apps.challenges import speech
+    sid = running_session(client)
+    ch = client.officer.post(f"{S}/{sid}/challenges/issue", json={"type": "phrase"}).json()
+    monkeypatch.setattr(speech, "transcribe", lambda wave, sr: (None, "MODEL_NOT_DOWNLOADED"))
+    assert _phrase_upload(client, sid, ch["id"]).status_code == 200
+    seen = next(x for x in client.officer.get(f"{S}/{sid}/challenges").json() if x["id"] == ch["id"])
+    assert seen["result"] == "unavailable" and "download_models.py --speech" in seen["reason"]
+
+
+def test_phrase_matching_tolerates_spelling_variants():
+    from apps.challenges.services import _phrase_match
+    assert _phrase_match("Holi Lassi Bollywood", "holy lassie bolly wood")[0] == 3
+    assert _phrase_match("Delhi Mango Goa", "tea cup window")[0] == 0

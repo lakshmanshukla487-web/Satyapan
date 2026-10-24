@@ -23,7 +23,7 @@ def run_detectors(s, names: list[str], media, warnings: list[str], extra_details
             # Bounded pool + bounded queue: when the models are saturated the request is refused at once (HTTP 503, the browser
             # retries on its next tick) instead of joining an ever longer queue that would make every customer's page slow.
             if not rt.gate.enter():
-                raise AppError("SERVER_BUSY", "The analysis service is busy. Please try again in a moment.", 503)
+                raise AppError("SERVER_BUSY", "The analysis service is busy. Please try again in a moment.", 503, retry_after=2)
             try:
                 res = rt.pool.submit(det.analyze, media, None).result()
             finally:

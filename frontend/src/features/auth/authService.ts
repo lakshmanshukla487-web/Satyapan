@@ -12,7 +12,7 @@ export interface AuthService {
   logout(): Promise<void>  // revokes every token of the user on the server
 }
 const wait = (ms = 300) => new Promise((r) => setTimeout(r, ms))
-export const homeFor = (role: Role) => (role === 'officer' ? '/officer' : '/dashboard')
+export const homeFor = (role: Role) => (role === 'officer' ? '/officer' : role === 'developer' ? '/developer' : '/dashboard')
 
 const post = (path: string, username: string, password: string) =>
   api<AuthResult>(path, { method: 'POST', body: JSON.stringify({ username, password }) }, { auth: false })

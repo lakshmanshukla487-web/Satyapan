@@ -62,9 +62,11 @@ def get_visible(session_id: str, user) -> VerificationSession:
 
 
 def get_owned(session_id: str, user) -> VerificationSession:
-    """For actions that run a verification: only the customer who owns the session."""
+    """For actions that run a verification: only the customer who owns the session (never an officer or a developer account)."""
     if user.is_officer:
         raise AppError("FORBIDDEN", "Officers review sessions; they cannot operate a customer's verification.", 403)
+    if getattr(user, "role", None) != "customer":
+        raise AppError("FORBIDDEN", "This action is only available to customers.", 403)
     return get_visible(session_id, user)
 
 

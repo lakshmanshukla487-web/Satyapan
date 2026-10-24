@@ -36,7 +36,8 @@ def make_settings(**kw) -> AppSettings:
     # flows without them, and tests/test_documents.py / tests/test_approval_workflow.py turn them on explicitly.
     # v4 gates (officer approval before a session, the v3 policy, model preload) are also OFF by default here; their own
     # test files turn them on explicitly.
-    return AppSettings(**{"rate_limit_per_minute": 10000, "require_documents": False, "require_challenge_approval": False,
+    return AppSettings(**{"rate_limit_per_minute": 10000, "rate_limit_user_per_minute": 10000, "rate_limit_media_per_minute": 10000,
+                          "rate_limit_ip_ceiling_per_minute": 100000, "require_documents": False, "require_challenge_approval": False,
                           "require_session_approval": False, "decision_policy": "v2", "preload_models": False, "enable_ip_check": False, **kw})
 
 

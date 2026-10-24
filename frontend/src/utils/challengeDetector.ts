@@ -20,7 +20,7 @@ const TURN_DEG = 18 // stop early once the turn is clearly done (the server acce
 const TURN_MIN = 15 // same as the server's minimum, used to decide which direction to report
 const BASELINE_FRAMES = 6 // frames used to learn how the head is held before the turn
 const BUDGET_MS = 15000 // time allowed for a head turn or two blinks
-const LISTEN_MS = 15000 // time allowed to say the phrase
+export const PHRASE_SECONDS = 10 // time allowed to say the phrase (recorded for the server, and heard by the browser if it can)
 const BLINK_CLOSE = 0.35, BLINK_OPEN = 0.2 // eyeBlink blendshape score (0 open .. 1 closed) to count a closure / reopening
 /** Approximate head yaw in degrees from where the nose sits between the cheek edges. Positive = turned toward the USER'S right.
  *  Heuristic (not calibrated): the video preview must stay un-mirrored for the sign to be right. */
@@ -30,9 +30,10 @@ function yawOf(l: { x: number }[]): number {
 }
 interface Recognizer { lang: string; interimResults: boolean; continuous: boolean; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onerror: (() => void) | null; onend: (() => void) | null; start(): void; stop(): void; abort(): void }
 function listen(live: (s: string) => void, signal: AbortSignal): Promise<Measured> {
+  const LISTEN_MS = PHRASE_SECONDS * 1000
   const w = window as unknown as { SpeechRecognition?: new () => Recognizer; webkitSpeechRecognition?: new () => Recognizer }
   const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition
-  if (!Ctor) { live('This browser has no speech recognition, so this result will be unavailable. Try Chrome or Safari.'); return Promise.resolve({}) }
+  if (!Ctor) return Promise.resolve({})  // the server transcribes the recording anyway
   return new Promise((resolve) => {
     // The challenge words are Indian names, so recognise with the Indian-English model. Chrome ends a session after a
     // short silence, so restart it until the time budget is used; a single session often heard nothing at all.

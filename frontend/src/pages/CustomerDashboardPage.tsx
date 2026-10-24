@@ -18,13 +18,13 @@ const label: Record<SessionStatus, { text: string; tone: 'cyan' | 'green' | 'sla
 
 export default function CustomerDashboardPage() {
   const { user } = useAuth()
-  const { data, error, loading, reload } = useAsync(() => service.listMySessions(), [])
+  const { data, error, loading, refreshing, reload } = useAsync(() => service.listMySessions(), [])
   const rows = data ?? []
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h1 className="text-2xl font-semibold text-white">Welcome, {user?.username}</h1><p className="text-sm text-slate-400">Your identity verification sessions.</p></div>
-        <div className="flex gap-3"><button className={btnGhost} onClick={reload} disabled={loading}><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />Refresh</button><Link to="/verify" className={btnPrimary}><ShieldCheck className="h-4 w-4" />Start new verification</Link></div>
+        <div className="flex gap-3"><button className={btnGhost} onClick={reload} disabled={refreshing}><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />Refresh</button><Link to="/verify" className={btnPrimary}><ShieldCheck className="h-4 w-4" />Start new verification</Link></div>
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
         {([[FileText, '1. Officer approval and documents', 'An officer approves your request. Then upload the documents needed to open an account in India: PAN, one proof of identity and address (Aadhaar, passport, driving licence or voter ID), and your details.'], [ScanFace, '2. Photo and live check', 'Take a close-up starting photo, then allow your camera and microphone and follow the prompts for as long as the check runs. The officer may ask to see and talk to you.'], [UserCheck, '3. Officer review', 'A person reviews the result and decides. Video and audio are analysed and not stored; only results are kept.']] as const).map(([Icon, t, d]) => (

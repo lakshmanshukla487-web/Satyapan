@@ -32,6 +32,7 @@ export default function LandingPage() {
             {!user && <><Link to="/login" className={btnPrimary}>Sign in<ArrowRight className="h-4 w-4" /></Link><Link to="/register" className={btnGhost}>Create customer account</Link></>}
             {user?.role === 'customer' && <><Link to="/verify" className={btnPrimary}>Start verification<ArrowRight className="h-4 w-4" /></Link><Link to="/dashboard" className={btnGhost}>My dashboard</Link></>}
             {user?.role === 'officer' && <Link to="/officer" className={btnPrimary}>Open review console<ArrowRight className="h-4 w-4" /></Link>}
+            {user?.role === 'developer' && <Link to="/developer" className={btnPrimary}>Open model test lab<ArrowRight className="h-4 w-4" /></Link>}
           </div>
         </div>
       </section>

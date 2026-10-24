@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Camera, CheckCircle2, Hourglass, Lock, Mic, MicOff, ShieldCheck, Square } from 'lucide-react'
 import { service } from '../features/services'
+import { toChallenge } from '../features/realService'
 import { useCall } from '../features/call/useCall'
 import { useMediaStream } from '../hooks/useMediaStream'
 import { useConnectionStatus } from '../hooks/useConnectionStatus'
@@ -12,17 +13,18 @@ import { DocumentsStep } from '../components/DocumentsStep'
 import { PhotoStep } from '../components/PhotoStep'
 import { CustomerCallBar } from '../components/CallPanels'
 import { captureFrame, captureFrameAt, recordAvClip, recordWav } from '../utils/capture'
-import { guideEyeScan, measure, type Measured } from '../utils/challengeDetector'
+import { PHRASE_SECONDS, guideEyeScan, measure, type Measured } from '../utils/challengeDetector'
 import { collectProbe } from '../utils/integrityProbe'
 import { samplePulse } from '../utils/pulseSampler'
 import { env } from '../config/env'
+import { ApiError } from '../services/apiClient'
 import type { Challenge, ChallengeStatus, WsEvent } from '../types'
 
 // The customer is never told whether a step "passed": results stay with the officer, so a fraudster cannot tune an attack against them.
 const tone: Record<ChallengeStatus, 'green' | 'red' | 'amber' | 'slate' | 'cyan'> = { passed: 'green', failed: 'red', in_progress: 'cyan', pending: 'slate', unavailable: 'amber', awaiting_approval: 'amber', done: 'slate' }
 const statusText = (s: ChallengeStatus) => (s === 'awaiting_approval' ? 'with reviewer' : s === 'done' ? 'done' : s.replace('_', ' '))
 const MOCK_TOTAL = 3 // demo mode only: the simulated flow has three steps
-const MIN_SESSION_S = 90 // the backend cannot give GREEN to shorter sessions, so the Finish button unlocks after this long (backend MIN_SESSION_SECONDS)
+const MIN_SESSION_S = 90 // the backend cannot give GREEN to shorter sessions (backend MIN_SESSION_SECONDS); the officer finishes the check
 const MIN_FRAMES = 2, MIN_AUDIO = 1 // samples the backend needs before the session ends, or detectors report "no samples" (GREY)
 const GAP_SECONDS = 4 // breathing space between one challenge and the next
 const GAP_SECONDS_REVIEWED = 2 // when an officer approves every step, the review itself already gives breathing space
@@ -32,7 +34,13 @@ const SHOWN = 5 // challenge history lines shown
 const STEPS = ['Request', 'Documents', 'Your photo', 'Live check']
 type Phase = 'consent' | 'waiting' | 'documents' | 'photo' | 'live' | 'done' | 'ended' | 'declined'
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// Polling is only a FALLBACK: the customer's WebSocket delivers approval, released challenges and termination. With the socket open
+// a slow safety check remains (a missed event must never stall the customer); with it down, a bounded faster check takes over.
+const POLL = { approval: { open: 20000, closed: 5000 }, challenge: { open: 15000, closed: 4000 }, ended: { open: 30000, closed: 8000 } }
 const msg = (e: unknown) => (e instanceof Error ? e.message : 'Something went wrong.')
+const uploadNote = (what: string, e: unknown) => (e instanceof ApiError && (e.code === 'CLIENT_COOLDOWN' || e.code === 'RATE_LIMITED')
+  ? `${what} paused for a few seconds (the server asked us to slow down); it resumes on its own.`
+  : e instanceof ApiError && e.code === 'SERVER_BUSY' ? `${what}: the analysis service is busy; the next sample will be sent shortly.` : `${what}: ${msg(e)}`)
 const NEUTRAL_END = 'This verification has ended. We will complete it another way. You do not need to do anything else here.'
 const NEUTRAL_DECLINED = 'Your request could not be taken forward right now. We will contact you about the next step. You do not need to do anything else here.'
 async function videoReady(v: HTMLVideoElement | null, ms = 4000) {
@@ -49,6 +57,7 @@ export default function VerificationPage() {
   const mockList = useRef<Challenge[]>([])
   const calibration = useRef<AbortController | null>(null)
   const syncing = useRef(false)
+  const syncAgain = useRef(false)
   const reviewed = useRef(false) // an officer approves each step (learned from the first challenge)
   const submitting = useRef(false)
   const approving = useRef(false)
@@ -68,15 +77,16 @@ export default function VerificationPage() {
   const [endMsg, setEndMsg] = useState(NEUTRAL_END)
   const [busy, setBusy] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  const conn = useConnectionStatus('idle', Boolean(err))
   const active = media.state === 'active'
-  const current = challenges.find((c) => c.status === 'in_progress')
+  const current = [...challenges].reverse().find((c) => c.status === 'in_progress')  // the newest: an officer's choice replaces the open one
   const waiting = challenges.find((c) => c.status === 'awaiting_approval')
   const waitingId = waiting?.id
   const passedMock = challenges.filter((c) => c.status === 'passed').length
   const stepIndex = phase === 'consent' || phase === 'waiting' || phase === 'declined' ? 0 : phase === 'documents' ? 1 : phase === 'photo' ? 2 : phase === 'live' ? 3 : 4
 
   const channel = useCustomerChannel(phase === 'waiting' || phase === 'live' ? sessionId : null, (e) => eventRef.current(e))
+  const sockOpen = channel.state === 'open'
+  const conn = useConnectionStatus(channel.state, Boolean(err))
   const call = useCall('customer', channel.send, () => media.streamRef.current)
 
   /* ---------------------------------------------------------------- session lifecycle */
@@ -107,8 +117,16 @@ export default function VerificationPage() {
     calibration.current?.abort(); live.current = null; call.hangUp(); media.stop()
     setEndMsg(message || NEUTRAL_END); setPhase('ended')
   }
-  const checkEnded = async (id: string) => {
-    try { const mine = await service.listMySessions(); if (live.current === id && mine.find((x) => x.id === id)?.status === 'terminated') endSession() } catch { /* offline: try again next time */ }
+  const finishedByOfficer = () => { // the officer finished the check: same end screen as a completed verification
+    finishing.current = true; calibration.current?.abort(); live.current = null; call.hangUp(); media.stop(); setPhase('done')
+  }
+  const checkEnded = async (id: string) => {  // one small request for this session (it used to list every session of the customer)
+    try {
+      const m = await service.getMySession(id)
+      if (live.current !== id) return
+      if (m.status === 'terminated') endSession()
+      else if (m.status === 'completed') finishedByOfficer()
+    } catch { /* offline or paused: try again next time */ }
   }
   const reset = () => {
     calibration.current?.abort(); media.stop()
@@ -227,6 +245,31 @@ export default function VerificationPage() {
       await afterAnswer(id, list)
     } catch (e) { setErr(msg(e)); void checkEnded(id) } finally { submitting.current = false; setBusy(false) }
   }
+  // Say three words: record the phrase for the server (it transcribes it) while the browser also listens if it can.
+  const submitPhrase = async (cur: Challenge, ac: AbortController) => {
+    const id = sessionId, st = media.streamRef.current, video = media.videoRef.current
+    if (!id || !st || !video || submitting.current) return
+    setErr(null)
+    let locked = false  // taken only for the upload: a replaced phrase must not block the next challenge while it records
+    try {
+      const avClip = window.setTimeout(() => void sendAvClip(id).catch(() => undefined), 1500)  // lip-sync evidence while they speak
+      ac.signal.addEventListener('abort', () => window.clearTimeout(avClip))
+      const words = cur.prompt.replace(/^Say aloud:\s*/, '')
+      let left = PHRASE_SECONDS
+      setLiveMsg(`Say now: ${words} (${left}s)`)
+      const tick = window.setInterval(() => { left = Math.max(0, left - 1); setLiveMsg(`Say now: ${words} (${left}s)`) }, 1000)
+      ac.signal.addEventListener('abort', () => window.clearInterval(tick))  // replaced: stop writing over the next step's messages
+      const [wav, heard] = await Promise.all([recordWav(st, PHRASE_SECONDS), measure(cur, video, () => undefined, ac.signal).catch(() => ({} as Measured))])
+      window.clearInterval(tick)
+      if (ac.signal.aborted || live.current !== id || submitting.current) return
+      submitting.current = locked = true; setBusy(true); setLiveMsg('Checking...')
+      let list: Challenge[]
+      try { const res = await service.submitPhrase(id, cur.id, wav, typeof heard.spoken_text === 'string' ? heard.spoken_text : undefined); list = challenges.map((c) => (c.id === cur.id ? res : c)) }
+      catch (e) { if (!msg(e).includes('expired')) throw e; await requestChallenge(id, challenges.filter((c) => c.id !== cur.id)); setNote('That step timed out, so a new one was requested.'); return }
+      setNote(''); setLiveMsg('')
+      await afterAnswer(id, list)
+    } catch (e) { setErr(msg(e)); void checkEnded(id) } finally { if (locked) { submitting.current = false; setBusy(false) } }
+  }
   // Eye scan: guide the person close to the camera, take 5 close-up frames, let the server decide.
   const submitEyeScan = async (cur: Challenge, ac: AbortController) => {
     const id = sessionId, video = media.videoRef.current
@@ -250,7 +293,8 @@ export default function VerificationPage() {
   /* ---------------------------------------------------------------- waiting for the reviewing officer */
   const syncWaiting = async () => {
     const id = sessionId, wid = waitingId
-    if (!id || !wid || syncing.current || live.current !== id) return
+    if (!id || !wid || live.current !== id) return
+    if (syncing.current) { syncAgain.current = true; return } // a check is running: run once more right after it (never drop a wake-up)
     syncing.current = true
     try {
       const cur = await service.currentChallenge(id)
@@ -259,36 +303,58 @@ export default function VerificationPage() {
       if (cur) { setChallenges((p) => p.map((c) => (c.id === wid ? cur : c))); return } // released, or replaced by a fresh request
       setNote('The review request timed out, so a new one was sent.') // nothing open any more
       await requestChallenge(id, challenges.filter((c) => c.id !== wid))
-    } catch (e) { setErr(msg(e)); void checkEnded(id) } finally { syncing.current = false }
+    } catch (e) { if (!(e instanceof ApiError && e.code === 'CLIENT_COOLDOWN')) { setErr(msg(e)); void checkEnded(id) } } finally {
+      syncing.current = false
+      if (syncAgain.current) { syncAgain.current = false; void syncRef.current() }
+    }
   }
+  const syncRef = useRef(syncWaiting)
+  syncRef.current = syncWaiting
+  // The released challenge arrives WITH its content on the customer's socket: show it at once, no request needed.
+  const applyReleased = (c: Challenge) => setChallenges((p) => {
+    const prev = p.find((x) => x.id === c.id)
+    if (prev && prev.status !== 'awaiting_approval') return p // already shown or answered: a repeated event changes nothing
+    // The released one replaces whatever was still open (the officer sent a challenge of their own choice instead).
+    return [...p.filter((x) => x.id !== c.id && x.status !== 'awaiting_approval' && x.status !== 'in_progress'), c]
+  })
   eventRef.current = (e: WsEvent) => {
     if (e.event === 'session.terminated') endSession((e.data as { message?: string } | null)?.message)
+    else if (e.event === 'session.status') { if ((e.data as { status?: string } | null)?.status === 'completed' && live.current === e.session_id && phase === 'live') finishedByOfficer() }
     else if (e.event === 'session.approved' || e.event === 'session.rejected') { if (sessionId) void checkApproval(sessionId) }
-    else if (e.event === 'challenge.released') void syncWaiting()
-    else call.onEvent(e)
+    else if (e.event === 'challenge.released') {
+      const d = e.data as { id?: string; status?: string; challenge_text?: string } | null
+      if (d?.id && d.status === 'issued' && d.challenge_text && live.current === e.session_id) applyReleased(toChallenge(d as Parameters<typeof toChallenge>[0]))
+      else void syncWaiting()
+    } else call.onEvent(e)
   }
   useEffect(() => { // waiting for the officer to approve the request: the socket tells us, polling is the fallback
     if (!real || phase !== 'waiting' || !sessionId) return
     const id = sessionId
     void checkApproval(id)
-    const t = setInterval(() => void checkApproval(id), 3000)
+    const t = setInterval(() => void checkApproval(id), sockOpen ? POLL.approval.open : POLL.approval.closed)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [real, phase, sessionId])
-  useEffect(() => { // polling fallback in case the socket drops
+  }, [real, phase, sessionId, sockOpen])
+  useEffect(() => { // a released challenge arrives on the socket; this only catches a missed event (one loop, in-flight guarded)
     if (!real || phase !== 'live' || !waitingId) return
-    const t = setInterval(() => void syncWaiting(), 3000)
+    const t = setInterval(() => void syncWaiting(), sockOpen ? POLL.challenge.open : POLL.challenge.closed)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [real, phase, waitingId, sessionId])
-  useEffect(() => { // and a slow check that an officer has not ended the session
+  }, [real, phase, waitingId, sessionId, sockOpen])
+  useEffect(() => { // and a slow check that an officer has not ended the session (the socket normally says so at once)
     if (!real || phase !== 'live' || !sessionId) return
     const id = sessionId
-    const t = setInterval(() => void checkEnded(id), 6000)
+    const t = setInterval(() => void checkEnded(id), sockOpen ? POLL.ended.open : POLL.ended.closed)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [real, phase, sessionId])
-  useEffect(() => { // how long the check has been running (the Finish button unlocks after the minimum length)
+  }, [real, phase, sessionId, sockOpen])
+  useEffect(() => { // the socket came back: catch up once on anything that happened while it was down
+    if (!real || !sockOpen || !sessionId) return
+    if (phase === 'waiting') void checkApproval(sessionId)
+    else if (phase === 'live') { if (waitingId) void syncWaiting(); void checkEnded(sessionId) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sockOpen])
+  useEffect(() => { // how long the check has been running (shown with the minimum-length bar)
     if (phase !== 'live' || !active) return
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt.current) / 1000)), 1000)
     return () => clearInterval(t)
@@ -300,7 +366,7 @@ export default function VerificationPage() {
     if (!real || !active || !sessionId || !current || !video || calibrating) return
     const ac = new AbortController()
     if (current.kind === 'eye_scan') { void submitEyeScan(current, ac); return () => ac.abort() }
-    if (current.kind === 'phrase') { const t = setTimeout(() => void sendAvClip(sessionId).catch(() => undefined), 1500); ac.signal.addEventListener('abort', () => clearTimeout(t)) }
+    if (current.kind === 'phrase') { void submitPhrase(current, ac); return () => ac.abort() }
     measure(current, video, setLiveMsg, ac.signal)
       .then((m) => { if (!ac.signal.aborted) void submitWith(current, m) })
       .catch((e) => { setNote(`Challenge detection unavailable: ${msg(e)}. Run "npm run setup:assets" in the frontend folder.`); if (!ac.signal.aborted) void submitWith(current, {}) })
@@ -317,8 +383,8 @@ export default function VerificationPage() {
   useEffect(() => { // first samples right away, then a frame every 3 s and a 5 s WAV clip every 6 s while capturing
     if (!real || !active || !sessionId) return
     const id = sessionId
-    const frame = () => void sendFrame(id).catch((e) => setNote(`Frame upload: ${msg(e)}`))
-    const audio = () => void sendAudio(id, 5).catch((e) => setNote(`Audio upload: ${msg(e)}`))
+    const frame = () => void sendFrame(id).catch((e) => setNote(uploadNote('Frame upload', e)))
+    const audio = () => void sendAudio(id, 5).catch((e) => setNote(uploadNote('Audio upload', e)))
     const t1 = setTimeout(audio, 300), t2 = setTimeout(frame, 800), fi = setInterval(frame, 3000), ai = setInterval(audio, 6000)
     return () => { clearTimeout(t1); clearTimeout(t2); clearInterval(fi); clearInterval(ai) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -338,7 +404,6 @@ export default function VerificationPage() {
   )
 
   const shown = challenges.filter((c) => c.status !== 'awaiting_approval').slice(-SHOWN)
-  const canFinish = !real || elapsed >= MIN_SESSION_S
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div><h1 className="text-2xl font-semibold text-white">Identity verification</h1><p className="text-sm text-slate-400">A bank officer approves your request, then you upload documents, take a starting photo and complete a live check.</p></div>
@@ -366,8 +431,9 @@ export default function VerificationPage() {
       {phase === 'documents' && sessionId && (
         <DocumentsStep sessionId={sessionId} onAccepted={() => { setErr(null); setPhase('photo') }} />)}
 
-      {phase === 'photo' && sessionId && (
-        <PhotoStep sessionId={sessionId} onAccepted={() => { setErr(null); setPhase('live') }} />)}
+      {phase === 'photo' && sessionId && (<>
+        <PhotoStep sessionId={sessionId} onAccepted={() => { setErr(null); setPhase('live') }} />
+        <div className="mx-auto flex max-w-2xl justify-start"><button className={btnGhost} onClick={() => setPhase('documents')}>Back to my documents (correct or replace a file)</button></div></>)}
 
       {phase === 'live' && (
         <div className="grid gap-6 lg:grid-cols-2">
@@ -405,12 +471,11 @@ export default function VerificationPage() {
             {shown.length > 0 && <ul className="space-y-2">{shown.map((c) => <li key={c.id} className="flex items-center justify-between gap-2 rounded-lg border border-white/[0.07] p-3 text-sm"><span className={c.status === 'in_progress' ? 'text-white' : 'text-slate-400'}>{c.prompt}</span><Pill tone={real ? (c.status === 'in_progress' ? 'cyan' : 'slate') : tone[c.status]}>{statusText(c.status)}</Pill></li>)}</ul>}
             {active && real && (
               <div className="space-y-2 border-t border-white/[0.06] pt-3">
-                <p className="text-sm text-slate-300">New steps keep appearing for as long as the check runs. When the time bar is full you can finish.</p>
+                <p className="text-sm text-slate-300">New steps keep appearing for as long as the check runs. The reviewing officer finishes the check; this page updates on its own when they do.</p>
                 <div className="flex flex-wrap gap-2">
-                  <button className={btnPrimary} disabled={busy || !canFinish} onClick={() => void finish()}>{busy && finishing.current ? <Spinner /> : <CheckCircle2 className="h-4 w-4" />}{canFinish ? 'Finish verification' : `Finish in ${Math.max(0, MIN_SESSION_S - elapsed)}s`}</button>
                   <button className={btnGhost} disabled={busy || !current || current.kind === 'eye_scan'} onClick={() => current && void submitWith(current, {})}>Skip this step</button>
                 </div>
-                <p className="text-xs text-slate-500">Head turns and blinks are measured in your browser (MediaPipe) and checked again on the server. Spoken phrases use your browser's speech service, which may send audio to its provider. Results are never shown to you.</p>
+                <p className="text-xs text-slate-500">Head turns and blinks are measured in your browser (MediaPipe) and checked again on the server. Spoken words are recorded and checked on the server (not stored); your browser's speech service may also listen. Results are never shown to you.</p>
               </div>)}
             {active && !real && <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-3"><span className="text-xs text-slate-500">Demo controls:</span><button className={btnGhost} onClick={() => advance(true)}>Simulate pass</button><button className={btnGhost} onClick={() => advance(false)}>Simulate fail</button></div>}
           </Card>

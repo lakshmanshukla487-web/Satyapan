@@ -52,7 +52,7 @@ def _int_param(request, name: str, default: int, lo: int, hi: int | None = None)
 def sessions(request):
     ser = serializer_for(request.user)
     if request.method == "POST":
-        if request.user.is_officer:
+        if request.user.role != "customer":  # officers and developer accounts never run a customer verification
             raise AppError("FORBIDDEN", "Only customers can start a verification.", 403)
         cfg = get_runtime().settings
         open_requests = VerificationSession.objects.filter(owner=request.user, approval_status="pending").exclude(status__in=("cancelled", "terminated", "completed", "failed"))
@@ -151,18 +151,37 @@ def complete(request, session_id):
     ss.require_state(s, "complete")
     from apps.integrity.services import observe_ip
     observe_ip(request, s, "complete")
+    _finalize(s)
+    return Response(CustomerSessionSerializer(s).data)
+
+
+@extend_schema(tags=["officer"], request=None, responses=SessionSerializer)
+@api_view(["POST"])
+@permission_classes([IsOfficer])
+def finish(request, session_id):
+    """Officer: the live check is over. Completes a running session exactly like the customer's own completion; the customer's
+    page sees the neutral 'completed' status on its socket and closes the camera."""
+    s = ss.get_or_404(session_id)
+    ss.require_state(s, "complete")
+    _finalize(s, officer_id=request.user.pk)
+    audit(request, "officer.finish_session", session_id=s.id)
+    return Response(SessionSerializer(s).data)
+
+
+def _finalize(s: VerificationSession, officer_id: int | None = None) -> None:
     d = current_decision(s, fresh=True)
     with transaction.atomic():
         s.status, s.completed_at, s.final_risk_level, s.summary = "completed", timezone.now(), d["risk_level"], d["summary"]
         s.save()
-        append_event(s.id, "session.completed", {"risk_level": d["risk_level"], "reasons": d["reasons"], "rule": d["rule"], "policy_version": s.policy_version})
+        Challenge.objects.filter(session=s, status__in=("awaiting_approval", "issued")).update(status="expired")
+        data = {"risk_level": d["risk_level"], "reasons": d["reasons"], "rule": d["rule"], "policy_version": s.policy_version}
+        append_event(s.id, "session.completed", data if officer_id is None else {**data, "officer_id": officer_id})
         s.report = build_report(s, d)  # frozen summary for the officer; its hash goes into the evidence chain
         s.save(update_fields=["report"])
         append_event(s.id, "report.generated", {"risk_level": d["risk_level"], "report_sha256": digest(s.report)})
     publish(s.id, "risk.updated", d)
     publish(s.id, "analysis.completed", {"risk_level": d["risk_level"]})
     push(s)
-    return Response(CustomerSessionSerializer(s).data)
 
 
 @extend_schema(tags=["sessions"], request=None, responses=CustomerSessionSerializer)
@@ -281,3 +300,13 @@ def auto_approve(request, session_id):
     audit(request, "officer.auto_approve_challenges", session_id=s.id, enabled=enabled)
     publish(s.id, "session.status", {"status": s.status, "final_risk_level": s.final_risk_level, "approval_status": s.approval_status, "challenge_auto_approve": enabled})
     return Response(SessionSerializer(s).data)
+
+
+@extend_schema(tags=["officer"], parameters=[OpenApiParameter("limit", int)], responses={200: dict})
+@api_view(["GET"])
+@permission_classes([IsOfficer])
+def officer_dashboard(request):
+    """The review console in one request: recent sessions with their current colour, document status and usable-signal count,
+    the challenge approval queue, the customers asking to start, and the latest activity."""
+    from apps.verification.dashboard import officer_dashboard as build  # lazy: reads several apps
+    return Response(build(_int_param(request, "limit", 50, 1, 100)))

@@ -11,6 +11,7 @@ import SessionDetailsPage from '../pages/SessionDetailsPage'
 import EvidencePage from '../pages/EvidencePage'
 import SessionReportPage from '../pages/SessionReportPage'
 import NotFoundPage from '../pages/NotFoundPage'
+import DeveloperLabPage from '../pages/DeveloperLabPage'
 export function AppRoutes() {
   return (
     <Routes><Route element={<Layout />}>
@@ -26,6 +27,10 @@ export function AppRoutes() {
         <Route path="/sessions/:sessionId" element={<SessionDetailsPage />} />
         <Route path="/sessions/:sessionId/report" element={<SessionReportPage />} />
         <Route path="/sessions/:sessionId/evidence" element={<EvidencePage />} />
+      </Route>
+      {/* Developer accounts only (provisioned by an administrator). The backend checks the role on every developer API call too. */}
+      <Route element={<RequireRole role="developer" />}>
+        <Route path="/developer" element={<DeveloperLabPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Route></Routes>

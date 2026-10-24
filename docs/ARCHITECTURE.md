@@ -206,3 +206,63 @@ camera and microphone. ICE servers come from `GET /api/v1/rtc/config` (STUN by d
 `GET /sessions/{id}/report` (JSON), `/report/download?format=pdf|html|json`. The report is frozen at completion and its hash is in
 the evidence chain. It contains the family table, coverage, session analysis, identity and network sections, and ends with an
 "In plain words" section written for a non-technical reader.
+
+## 9. Version 5 changes
+
+### 9.1 Request volume and rate limiting
+
+Root cause of the "too many requests" errors: the officer's session page refetched five endpoints (session, analysis,
+challenges, full evidence chain, documents) on EVERY WebSocket event, and one uploaded frame produces about 13 events
+(detector.started / completed / signal.updated per detector, then risk.updated). With a frame every 3 s and a dense frame series
+during challenges this was ~3,600 requests per minute from one officer page (measured with the page code and a simulated event
+stream: 1,195 requests in 20 s). The console loaded every session through five requests each and reloaded on every feed event.
+All users behind the Vite proxy share one address (127.0.0.1), so the per-address limit of 120/min was exceeded within seconds
+and also hit customers. Every failed refresh also replaced the officer page by an error box, unmounting the live video.
+
+Fixes:
+* Officer workspace (`hooks/useSession.ts`): events that carry the new state (`risk.updated`, `signal.updated`) are applied without
+  a request; other events refetch only the part they concern, coalesced (throttle with trailing call, at most one round per 1.5 s,
+  one request in flight); the evidence list is a bounded tail (`GET .../evidence?tail=200`, not audited) refreshed at most every
+  10 s; polling (every 10 s) only while the socket is down; one catch-up refresh after a reconnect. Measured: 7 requests in 20 s.
+* Officer console: `GET /api/v1/officer/dashboard` returns sessions (with colour, document status and usable-signal count), the
+  approval queue, the requests and recent activity in one response, refreshed at most every 5 s.
+* Customer page: WebSocket first; polling is a slow safety net while the socket is open and a bounded fallback while it is down;
+  "has the officer ended the session" reads one session instead of listing all of them.
+* Client: request timeouts, bounded retries with exponential backoff and jitter for transient errors only, `Retry-After`
+  honoured, and a client-side pause of background traffic after a 429 (no burst when the limit lifts). Terminal errors are not
+  retried. `useAsync` never overlaps requests and ignores stale answers; a failed refresh keeps the last data on screen.
+* Server (`apps/core/middleware.py`): buckets per signed-in account (API and media separately) and per address for anonymous
+  requests, plus an address ceiling; 429 responses carry `Retry-After`, `retry_after`, `scope` and the request id. The account
+  id is read from the signed token without a database query; forged tokens count as anonymous. Login/sign-up throttles,
+  inference back-pressure (503 `SERVER_BUSY`, now with `Retry-After`) and workflow limits (`TOO_MANY_PENDING`) are unchanged.
+
+### 9.2 Live call and the live verification workspace
+
+The session page is now a workspace: the customer's live video (large) and the challenges of the SAME session side by side
+(stacked on small screens), with session context that keeps risk indicators, missing evidence (unavailable models) and failed
+challenges apart. Call fixes (`features/call/*`, `components/CallPanels.tsx`): a per-call id on every signalling message (the
+relay whitelists it; messages of another call are ignored, e.g. a late `call.end` no longer kills a new call), signalling
+processed strictly in order, remote tracks collected into one stream, remote audio played through an `<audio>` element with an
+explicit "click to hear" control when autoplay is blocked, a live audio level meter, officer microphone mute and an accurate
+microphone state (blocked / muted / on), answer and connect timeouts, recovery window for a dropped connection, and the call is
+ended for the other side when the page is left or closed. The customer's verification camera is never stopped by the call.
+
+### 9.3 Document correction
+
+`POST /api/v1/sessions/{id}/documents/{doc_type}/remove` (customer, own session, only while documents are editable: after
+consent, before the live check). Files are never stored, so it removes what is kept about the document, everything derived from
+its file (face embedding from the document photo; provenance results are marked superseded and ignored by the decision engine),
+and the last document check; the removal is recorded in the evidence chain. Replacing a document clears the same derived data
+before the new file is processed. The documents step shows the selected file (name, type, size) with Replace and Remove, the
+state of documents already on the server, and lets the customer go back from the photo step to correct documents.
+
+### 9.4 Developer role and model test lab
+
+Role `developer` (migration `accounts.0002`, choices only). Created only with `manage.py create_developer`; public sign-up always
+creates customers; developers cannot create or read customer sessions or officer endpoints. App `apps.devlab` (own tables, no
+relation to sessions) under `/api/v1/devlab/*` (all `IsDeveloper`). Jobs run in a background worker (one per process by default)
+through the same detector objects, preprocessing, bounded model pool and back-pressure gate as live traffic, always leaving
+`DEVLAB_LIVE_RESERVE` slots to live sessions. Uploads are identified by content (the extension must agree), probed for length and
+dimensions before acceptance, stored with private permissions only while needed, and deleted after processing, on cancel and on
+expiry. Videos are sampled evenly over the whole clip and aggregated (median by default, the same majority rule the live policy
+uses for a RED video family). Metrics use only labelled samples with a real detector result and list every exclusion.

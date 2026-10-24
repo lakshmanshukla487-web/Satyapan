@@ -7,4 +7,5 @@ urlpatterns = [
     path(f"{S}/<str:session_id>/documents", views.documents),
     path(f"{S}/<str:session_id>/documents/submit", views.submit),  # before the <doc_type> route
     path(f"{S}/<str:session_id>/documents/<str:doc_type>", views.upload),
+    path(f"{S}/<str:session_id>/documents/<str:doc_type>/remove", views.remove),
 ]

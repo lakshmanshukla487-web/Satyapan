@@ -54,15 +54,22 @@ def media_key(data: bytes) -> str:
 class CacheRateLimiter:
     """Fixed-window counter on the shared cache. Same interface as the in-memory RateLimiter. Fails open."""
 
-    def allow(self, key: str, limit: int, window_s: int = 60) -> bool:
-        bucket = int(time.time() // window_s)
+    def hit(self, key: str, limit: int, window_s: int = 60) -> tuple[bool, int]:
+        """-> (allowed, seconds until the current window ends when refused)."""
+        now = time.time()
+        bucket = int(now // window_s)
         k = f"rl:{key}:{bucket}"
         try:
             cache.add(k, 0, window_s + 5)
-            return int(cache.incr(k)) <= limit
+            if int(cache.incr(k)) <= limit:
+                return True, 0
+            return False, max(1, int((bucket + 1) * window_s - now) + 1)
         except Exception as e:  # noqa: BLE001
             log.warning("rate limiter unavailable (allowing): %s", type(e).__name__)
-            return True
+            return True, 0
+
+    def allow(self, key: str, limit: int, window_s: int = 60) -> bool:
+        return self.hit(key, limit, window_s)[0]
 
 
 class InferenceGate:
@@ -75,19 +82,22 @@ class InferenceGate:
         self._n = 0
         self._lock = threading.Lock()
 
-    def enter(self) -> bool:
+    def enter(self, reserve: int = 0) -> bool:
+        """Take a slot. `reserve` keeps that many slots free for others: the developer test lab passes the number of slots it
+        must always leave to live customer sessions, so offline testing can never push a live session into SERVER_BUSY."""
+        cap = max(1, self.limit - max(0, reserve))
         if self.shared:
             try:
                 cache.add("inflight", 0, 120)
                 n = int(cache.incr("inflight"))
-                if n > self.limit:
+                if n > cap:
                     cache.decr("inflight")
                     return False
                 return True
             except Exception as e:  # noqa: BLE001
                 log.warning("shared gate unavailable, using local count: %s", type(e).__name__)
         with self._lock:
-            if self._n >= self.limit:
+            if self._n >= cap:
                 return False
             self._n += 1
             return True

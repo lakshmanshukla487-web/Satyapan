@@ -37,6 +37,18 @@ def issue_token(user) -> tuple[str, "timezone.datetime"]:
     return token, timezone.now() + token_ttl()
 
 
+def token_uid(token: str):
+    """The account id inside a correctly signed, unexpired token, WITHOUT a database lookup (used by the rate limiter to give
+    every signed-in account its own bucket). A forged token fails the signature check, so nobody can pick another account's
+    bucket; revocation is still enforced by the authentication class on the actual request."""
+    try:
+        data = _signer().unsign_object(token, max_age=token_ttl())
+        uid = data["uid"]
+    except (signing.BadSignature, KeyError, TypeError, ValueError):
+        return None
+    return uid if isinstance(uid, int) else None
+
+
 def user_from_token(token: str):
     """Return the active user for a valid, unexpired, un-revoked token, else None."""
     try:
@@ -82,6 +94,12 @@ class IsOfficer(_HasRole):
 class IsCustomer(_HasRole):
     role = "customer"
     message = "This action is only available to customers."
+
+
+class IsDeveloper(_HasRole):
+    """Developer model test lab. Developer accounts are only created by an administrator (manage.py create_developer)."""
+    role = "developer"
+    message = "This resource is only available to developer accounts."
 
 
 class BearerScheme(OpenApiAuthenticationExtension):  # documents the scheme in /docs

@@ -7,7 +7,16 @@ security_log = logging.getLogger("satyapan.security")
 
 
 def client_ip(request) -> str:
-    return (getattr(request, "META", {}).get("REMOTE_ADDR") or "unknown")[:64]
+    """The client's address. X-Forwarded-For is only believed for the number of reverse proxies configured in
+    IP_TRUSTED_PROXY_HOPS (default 0: the connecting address, exactly as before), so a client cannot pick its own address."""
+    meta = getattr(request, "META", {}) or {}
+    try:
+        from apps.core.runtime import get_runtime
+        from apps.integrity.ipintel import client_ip_from_meta
+        ip = client_ip_from_meta(meta, get_runtime().settings.ip_trusted_proxy_hops)[0]
+    except Exception:  # noqa: BLE001  (an address problem must never fail a request)
+        ip = meta.get("REMOTE_ADDR") or ""
+    return (ip or "unknown")[:64]
 
 
 def audit(request, action: str, session_id=None, actor=None, **detail) -> None:

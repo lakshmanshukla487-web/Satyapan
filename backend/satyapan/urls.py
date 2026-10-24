@@ -29,4 +29,5 @@ urlpatterns += [
     path("", include("apps.reports.urls")),
     path("", include("apps.realtime.urls")),
     path("", include("apps.evidence.urls")),
+    path("", include("apps.devlab.urls")),
 ]

@@ -2,10 +2,12 @@ import { env } from '../config/env'
 import { ApiError } from '../services/apiClient'
 import { realService } from './realService'
 import { mockEvidence, mockSessions } from '../mocks/mockSessions'
-import type { ApprovalStatus, Challenge, ChallengeKind, CreatedSession, PendingSession, ReferenceResult, RtcConfig, DocumentSubmitResult, DocumentUploadResult, EvidencePacket, EvidenceVerificationResult, IntegrityProbe, OfficerDocuments, PendingApproval, Reason, SessionReport, SessionSummary, VerificationSession } from '../types'
+import type { ApprovalStatus, Challenge, ChallengeKind, CreatedSession, CustomerDocuments, DocumentRemoveResult, OfficerDashboard, PendingSession, ReferenceResult, RtcConfig, DocumentSubmitResult, DocumentUploadResult, EvidencePacket, EvidenceVerificationResult, IntegrityProbe, OfficerDocuments, PendingApproval, Reason, SessionPart, SessionReport, SessionSummary, VerificationSession } from '../types'
 
 export interface SatyapanService {
-  listSessions(): Promise<VerificationSession[]>  // officers: every session, with risk detail
+  listSessions(): Promise<VerificationSession[]>  // officers: every session, with risk detail (5 requests per session: avoid on hot paths)
+  getOfficerDashboard(opts?: { background?: boolean }): Promise<OfficerDashboard>  // officers: the whole review console in one request
+  refreshSession(id: string, parts: SessionPart[], current: VerificationSession): Promise<VerificationSession>  // only the parts that changed
   listMySessions(): Promise<SessionSummary[]>  // customers: only their own, without any risk outcome
   getSession(id: string): Promise<VerificationSession>
   createSession(): Promise<CreatedSession>
@@ -13,6 +15,8 @@ export interface SatyapanService {
   startSession(id: string): Promise<void>  // needs consent and (when enabled) checked documents
   uploadDocument(id: string, docType: string, fields: Record<string, string>, file?: File): Promise<DocumentUploadResult>
   submitDocuments(id: string): Promise<DocumentSubmitResult>
+  removeDocument(id: string, docType: string): Promise<DocumentRemoveResult>  // take back a wrong document (only before the live check)
+  getMyDocuments(id: string): Promise<CustomerDocuments>  // customer: what is on the server and what needs fixing
   sendIntegrityProbe(id: string, probe: IntegrityProbe): Promise<void>
   sendPulse(id: string, fps: number, rgb: number[][]): Promise<void>
   currentChallenge(id: string): Promise<Challenge | null>  // customer polling fallback for the approval workflow
@@ -22,6 +26,7 @@ export interface SatyapanService {
   regenerateChallenge(id: string, challengeId: string, kind?: ChallengeKind): Promise<void>
   issueChallengeAsOfficer(id: string, kind?: ChallengeKind): Promise<void>
   terminateSession(id: string, reason: string): Promise<void>
+  finishSession(id: string): Promise<void>  // officer: the live check is over
   getDocuments(id: string): Promise<OfficerDocuments | null>
   getReport(id: string): Promise<SessionReport>  // officers only
   getEvidence(id: string): Promise<EvidencePacket>
@@ -34,6 +39,7 @@ export interface SatyapanService {
   getMySession(id: string): Promise<{ id: string; status: string; approval: ApprovalStatus }>
   uploadReferencePhoto(id: string, jpg: Blob): Promise<ReferenceResult>
   submitEyeScan(id: string, challengeId: string, frames: Blob[]): Promise<void>
+  submitPhrase(id: string, challengeId: string, wav: Blob, spokenText?: string): Promise<Challenge>  // the server transcribes the recording
   uploadAvSync(id: string, frames: Blob[], times: number[], wav: Blob): Promise<void>
   listPendingSessions(): Promise<PendingSession[]>
   approveSession(id: string, note?: string): Promise<void>
@@ -79,6 +85,16 @@ function mockReport(s: VerificationSession): SessionReport {
 const mockService: SatyapanService = {
   async getReport(id) { return mockReport(await this.getSession(id)) },
   async listSessions() { await wait(); return mockSessions },
+  async getOfficerDashboard(): Promise<OfficerDashboard> {
+    await wait()
+    return { sessions: mockSessions.map((x) => ({ id: x.id, customer: x.customer ?? null, status: x.status, backendStatus: x.backendStatus ?? 'completed', approval: x.approval ?? 'not_required', startedAt: x.startedAt,
+      tier: x.tier, recommendation: x.recommendation, documentsStatus: x.documents?.status ?? 'not_submitted', signalsOk: x.signals.filter((g) => g.status === 'available' || g.status === 'flagged').length, signalsTotal: x.signals.length })),
+      total: mockSessions.length, pendingApprovals: [], pendingRequests: [], simulated: true,
+      activity: mockSessions.flatMap((x) => x.events.map((e) => ({ id: e.id, sessionId: x.id, type: e.message, timestamp: e.timestamp }))).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 8) }
+  },
+  async refreshSession(id) { return this.getSession(id) },
+  async removeDocument(_id, docType): Promise<DocumentRemoveResult> { await wait(150); return { doc_type: docType, removed: true, status: 'not_submitted' } },
+  async getMyDocuments(): Promise<CustomerDocuments> { return { documents: [], status: 'not_submitted' } },
   async listMySessions() { await wait(); return mockSessions.slice(0, 3).map((x) => ({ id: x.id, startedAt: x.startedAt, status: x.status, approval: 'not_required' as const })) },
   async getSession(id) { await wait(); const s = mockSessions.find((x) => x.id === id); if (!s) throw new ApiError(`Session ${id} was not found.`, 404); return s },
   async createSession() { await wait(); return { sessionId: `SAT-DEMO-${Date.now().toString(36).toUpperCase()}`, challenges: demoChallenges() } },
@@ -94,6 +110,7 @@ const mockService: SatyapanService = {
   async regenerateChallenge() { throw new ApiError('The approval workflow needs the real backend (VITE_USE_MOCKS=false).', null) },
   async issueChallengeAsOfficer() { throw new ApiError('The approval workflow needs the real backend (VITE_USE_MOCKS=false).', null) },
   async terminateSession() { throw new ApiError('Terminating a session needs the real backend (VITE_USE_MOCKS=false).', null) },
+  async finishSession() { throw new ApiError('Finishing a session needs the real backend (VITE_USE_MOCKS=false).', null) },
   async getDocuments() { return null },
   async issueChallenge(): Promise<Challenge> { throw new ApiError('Challenges are generated in the browser in mock mode.', null) },
   async submitChallenge(): Promise<Challenge> { throw new ApiError('Challenge results are simulated in mock mode.', null) },
@@ -102,6 +119,7 @@ const mockService: SatyapanService = {
   async getMySession(id) { return { id, status: 'ready', approval: 'approved' } },
   async uploadReferencePhoto(): Promise<ReferenceResult> { await wait(300); return { accepted: true, face_check: 'ok', iris_check: 'ok', issues: [] } },
   async submitEyeScan() { /* mock mode */ },
+  async submitPhrase(): Promise<Challenge> { throw new ApiError('Challenge results are simulated in mock mode.', null) },
   async uploadAvSync() { /* mock mode */ },
   async listPendingSessions() { return [] },
   async approveSession() { throw new ApiError('Approvals need the real backend (VITE_USE_MOCKS=false).', null) },

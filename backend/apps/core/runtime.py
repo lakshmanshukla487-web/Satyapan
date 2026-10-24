@@ -17,22 +17,34 @@ log = logging.getLogger("satyapan.runtime")
 
 
 class RateLimiter:
-    """In-memory per-IP sliding window. Used when no Redis is configured (single server process)."""
+    """In-memory sliding window per key. Used when no Redis is configured (single server process)."""
+
+    _PRUNE_EVERY = 5000  # calls between sweeps that drop idle keys (otherwise every address / account ever seen stays in memory)
 
     def __init__(self):
         self._hits: dict[str, deque] = defaultdict(deque)
         self._lock = threading.Lock()
+        self._calls = 0
 
-    def allow(self, key: str, limit: int, window_s: int = 60) -> bool:
+    def hit(self, key: str, limit: int, window_s: int = 60) -> tuple[bool, int]:
+        """Count one request. -> (allowed, seconds until the next request would be allowed; 0 when allowed)."""
         now = time.monotonic()
         with self._lock:
+            self._calls += 1
+            if self._calls % self._PRUNE_EVERY == 0:
+                for k in [k for k, q in self._hits.items() if not q or now - q[-1] > window_s]:
+                    del self._hits[k]
             q = self._hits[key]
             while q and now - q[0] > window_s:
                 q.popleft()
-            if len(q) >= limit:
-                return False
+            if len(q) >= max(0, limit):
+                retry = int(window_s - (now - q[0])) + 1 if q else window_s
+                return False, max(1, min(window_s, retry))
             q.append(now)
-            return True
+            return True, 0
+
+    def allow(self, key: str, limit: int, window_s: int = 60) -> bool:
+        return self.hit(key, limit, window_s)[0]
 
 
 class Runtime:
@@ -92,7 +104,11 @@ def warm_up() -> dict:
         log.info("PRELOAD_MODELS=false: models load on first use")
         return {}
     try:
-        return rt.registry.warm_up()
+        out = rt.registry.warm_up()
     except Exception as e:  # noqa: BLE001
         log.error("model warm-up failed: %s: %s", type(e).__name__, e)
         return {}
+    from apps.challenges.speech import load as load_speech  # lazy: challenges imports this module
+    out["speech"] = load_speech() or "loaded"
+    log.info("model %-10s %s", "speech", out["speech"])
+    return out

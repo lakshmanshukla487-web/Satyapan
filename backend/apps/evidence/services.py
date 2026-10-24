@@ -54,7 +54,7 @@ def build_packet(s: VerificationSession, decision: dict) -> dict:
             "challenges": [{"id": str(c.id), "type": c.challenge_type, "text": c.challenge_text, "issued_at": iso(c.issued_at), "status": c.status, "result": c.result} for c in ch],
             "signals": [{"detector": x.detector_name, "signal_type": x.signal_type, "status": x.status, "score": x.score, "threshold": x.threshold,
                          "model_id": (x.details or {}).get("model_id"), "score_kind": (x.details or {}).get("score_kind"), "error_code": x.error_code,
-                         "created_at": iso(x.created_at), "limitations": LIMITS} for x in sg],
+                         "created_at": iso(x.created_at), "superseded": bool((x.details or {}).get("superseded")), "limitations": LIMITS} for x in sg],
             "documents": document_summary(s),
             "unavailable_detectors": decision["unavailable_detectors"], "recommendation": decision, "policy_version": s.policy_version,
             "hash_chain": {"algorithm": "SHA-256", "genesis": GENESIS, "events": events, "verification": verify_chain(sid, events)},

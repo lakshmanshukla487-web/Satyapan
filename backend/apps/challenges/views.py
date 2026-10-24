@@ -4,7 +4,8 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from apps.accounts.auth import IsCustomer, IsOfficer
@@ -12,6 +13,8 @@ from apps.challenges import services as cs
 from apps.challenges.models import Challenge
 from apps.challenges.serializers import ChallengeChoiceIn, ChallengeResultIn, ChallengeSerializer, CustomerChallengeSerializer
 from apps.core.audit import audit
+from apps.core.media import decode_audio
+from apps.core.uploads import read_upload
 from apps.core.errors import AppError
 from apps.core.runtime import get_runtime
 from apps.evidence.services import append_event
@@ -99,6 +102,50 @@ def challenge_result(request, session_id, challenge_id):
     body.is_valid(raise_exception=True)
     s = get_owned(session_id, request.user)
     require_running(s)
+    c = _answerable(s, challenge_id)
+    if c.challenge_type == "eye_scan":
+        raise AppError("USE_EYE_SCAN_ENDPOINT", "The eye scan is finished by sending close-up frames to the eye-scan endpoint.", 409)
+    from apps.biometrics.services import pose_summary  # lazy: biometrics depends on challenges
+    result, detail = cs.evaluate(c, body.validated_data["measured"], pose_summary(s, c))
+    cs.record_result(s, c, result, detail, body.validated_data["measured"])
+    return Response(CustomerChallengeSerializer(c).data)  # the customer is never told whether a challenge passed
+
+
+PHRASE_SCHEMA = {"multipart/form-data": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}, "spoken_text": {"type": "string"}}, "required": ["file"]}}
+
+
+@extend_schema(tags=["challenges"], request=PHRASE_SCHEMA, responses=CustomerChallengeSerializer)
+@api_view(["POST"])
+@permission_classes([IsCustomer])
+@parser_classes([MultiPartParser])
+def challenge_phrase(request, session_id, challenge_id):
+    """Finishes a 'say three words' challenge: a WAV recording of the customer saying the words (field `file`) and, optionally,
+    what the browser's own speech recognition heard (`spoken_text`). The server transcribes the recording itself and decides."""
+    s = get_owned(session_id, request.user)
+    require_running(s)
+    c = _answerable(s, challenge_id)
+    if c.challenge_type != "phrase":
+        raise AppError("CHALLENGE_NOT_FOUND", "The requested challenge was not found.", 404)
+    cfg = get_runtime().settings
+    wave, sr = decode_audio(read_upload(request, cfg.max_upload_mb), cfg.max_audio_seconds)
+    rt = get_runtime()
+    if not rt.gate.enter():
+        raise AppError("SERVER_BUSY", "The analysis service is busy. Please try again in a moment.", 503, retry_after=2)
+    try:
+        from apps.challenges.speech import transcribe
+        text, status = rt.pool.submit(transcribe, wave, sr).result()
+    finally:
+        rt.gate.leave()
+    browser = (request.data.get("spoken_text") or "").strip()[:500] or None
+    measured = {"spoken_text": browser, "server_text": text[:500] if isinstance(text, str) else None, "server_speech": status}
+    from apps.biometrics.services import pose_summary  # lazy: biometrics depends on challenges
+    result, detail = cs.evaluate(c, measured, pose_summary(s, c))
+    cs.record_result(s, c, result, detail, measured)
+    return Response(CustomerChallengeSerializer(c).data)  # the customer is never told whether a challenge passed
+
+
+def _answerable(s, challenge_id: str) -> Challenge:
+    """The customer's own challenge, released and still open; expires it (410) when its time is up."""
     not_found = AppError("CHALLENGE_NOT_FOUND", "The requested challenge was not found.", 404)
     try:
         cid = uuid.UUID(challenge_id)
@@ -118,12 +165,7 @@ def challenge_result(request, session_id, challenge_id):
                 c.save()
                 append_event(s.id, "challenge.expired", {"challenge_id": str(c.id), "type": c.challenge_type, "sequence": c.sequence})
         raise AppError("CHALLENGE_EXPIRED", "This challenge has expired. Issue a new one.", 410)
-    if c.challenge_type == "eye_scan":
-        raise AppError("USE_EYE_SCAN_ENDPOINT", "The eye scan is finished by sending close-up frames to the eye-scan endpoint.", 409)
-    from apps.biometrics.services import pose_summary  # lazy: biometrics depends on challenges
-    result, detail = cs.evaluate(c, body.validated_data["measured"], pose_summary(s, c))
-    cs.record_result(s, c, result, detail, body.validated_data["measured"])
-    return Response(CustomerChallengeSerializer(c).data)  # the customer is never told whether a challenge passed
+    return c
 
 
 # ---------------------------------------------------------------- officer approval workflow
@@ -179,10 +221,12 @@ def challenge_issue(request, session_id):
     cfg = get_runtime().settings
     with transaction.atomic():
         cs.expire_stale(s)
+        replaced = cs.replace_open(s)  # the officer's choice wins: no generated challenge stays open next to it
         c = cs.issue(s.id, cfg.challenge_ttl_seconds, kind=body.validated_data.get("type"), sequence=Challenge.objects.filter(session=s).count() + 1)
         c.approval_status, c.approved_by, c.approved_at = "approved", request.user, timezone.now()
         c.save()
-        append_event(s.id, "challenge.officer_issued", {"challenge_id": str(c.id), "type": c.challenge_type, "officer_id": request.user.pk})
+        append_event(s.id, "challenge.officer_issued", {"challenge_id": str(c.id), "type": c.challenge_type, "officer_id": request.user.pk,
+                                                        "replaced": [str(x) for x in replaced]})
     audit(request, "officer.issue_challenge", session_id=s.id, challenge_id=str(c.id))
     publish(s.id, "challenge.issued", _officer_data(c, s))
     publish_customer(s.id, "challenge.released", dict(CustomerChallengeSerializer(c).data))
@@ -194,6 +238,5 @@ def challenge_issue(request, session_id):
 @permission_classes([IsOfficer])
 def pending_approvals(request):
     """Every challenge waiting for an officer, across running sessions (oldest first)."""
-    rows = (Challenge.objects.filter(status="awaiting_approval", approval_status="pending", session__status="running", expires_at__gt=timezone.now())
-            .select_related("session__owner").order_by("issued_at")[:50])
-    return Response({"items": [{"challenge": dict(ChallengeSerializer(c).data), "session": {"id": str(c.session_id), "customer": c.session.owner.username if c.session.owner else None}} for c in rows]})
+    from apps.verification.dashboard import pending_challenges  # lazy: the dashboard module reads several apps
+    return Response({"items": pending_challenges()})

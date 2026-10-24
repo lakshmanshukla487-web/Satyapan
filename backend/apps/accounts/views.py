@@ -31,9 +31,10 @@ def login(request):
     body.is_valid(raise_exception=True)
     username = body.validated_data["username"].strip().lower()
     rt = get_runtime()
-    if not rt.limiter.allow(f"login:{client_ip(request)}:{username}", rt.settings.login_max_attempts, WINDOW_S):
+    ok, retry = rt.limiter.hit(f"login:{client_ip(request)}:{username}", rt.settings.login_max_attempts, WINDOW_S)
+    if not ok:
         security_log.warning("login throttled ip=%s", client_ip(request))
-        raise AppError("RATE_LIMITED", "Too many sign-in attempts. Try again in a few minutes.", 429)
+        raise AppError("RATE_LIMITED", "Too many sign-in attempts. Try again in a few minutes.", 429, retry_after=retry)
     user = authenticate(request, username=username, password=body.validated_data["password"])
     if user is None:  # same message whether the username or the password was wrong
         security_log.warning("login failed ip=%s", client_ip(request))
@@ -51,8 +52,9 @@ def register(request):
     rt = get_runtime()
     if not rt.settings.allow_registration:
         raise AppError("REGISTRATION_DISABLED", "Self-registration is disabled. Contact an administrator.", 403)
-    if not rt.limiter.allow(f"register:{client_ip(request)}", rt.settings.login_max_attempts, WINDOW_S):
-        raise AppError("RATE_LIMITED", "Too many attempts. Try again in a few minutes.", 429)
+    ok, retry = rt.limiter.hit(f"register:{client_ip(request)}", rt.settings.login_max_attempts, WINDOW_S)
+    if not ok:
+        raise AppError("RATE_LIMITED", "Too many attempts. Try again in a few minutes.", 429, retry_after=retry)
     body = RegisterIn(data=request.data)
     body.is_valid(raise_exception=True)
     username, password = body.validated_data["username"].lower(), body.validated_data["password"]

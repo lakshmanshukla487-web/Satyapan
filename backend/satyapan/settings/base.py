@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     "apps.provenance",      # 6. provenance (C2PA marker + editing/generator metadata)
     "apps.visual",          # frame-level visual deepfake classifiers + face landmarks (from the original MVP)
     "apps.biometrics",      # 7/8. identity: reference photo, face match, iris scan, face on documents
+    # --- developer tooling (isolated from customer sessions) ---
+    "apps.devlab",          # developer model test lab: offline evaluation of the real detectors
 ]
 
 MIDDLEWARE = [
@@ -119,6 +121,9 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "EXCEPTION_HANDLER": "apps.core.exceptions.api_exception_handler",
+    # `?format=` is this API's own parameter (report download pdf|html|json, test-lab export csv|json). DRF would otherwise treat it
+    # as a renderer override and answer 404 before the view runs (which broke the officer's report download).
+    "URL_FORMAT_OVERRIDE": None,
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 SPECTACULAR_SETTINGS = {

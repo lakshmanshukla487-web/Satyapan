@@ -5,6 +5,7 @@
     python scripts/download_models.py --faces          # OpenCV YuNet + SFace (face match, Apache-2.0) -> models/*.onnx
     python scripts/download_models.py --landmarks      # MediaPipe face landmarker (Apache-2.0)        -> models/face_landmarker.task
     python scripts/download_models.py --syncnet        # SyncNet lip-sync weights (RESEARCH-ONLY licence!) -> models/syncnet/
+    python scripts/download_models.py --speech         # Whisper speech-to-text for the 'say three words' challenge (MIT) -> models/speech/
 
 The fine-tuned VOICE model is yours: copy model.safetensors into models/audio/ (config.json and preprocessor_config.json are already there)."""
 import argparse
@@ -33,7 +34,7 @@ def fetch(url: str, dest: Path) -> None:
 
 
 p = argparse.ArgumentParser()
-for f in ("all", "video", "faces", "landmarks", "syncnet"):
+for f in ("all", "video", "faces", "landmarks", "syncnet", "speech"):
     p.add_argument(f"--{f}", action="store_true")
 a = p.parse_args()
 if not any(vars(a).values()):
@@ -64,6 +65,13 @@ if a.all or a.faces:
         step(name, lambda n=name, u=url: fetch(u, root / n))
 if a.all or a.landmarks:
     step("face landmarker", lambda: fetch(LANDMARKER, root / "face_landmarker.task"))
+if a.all or a.speech:
+    def _speech():
+        from huggingface_hub import snapshot_download
+        repo = os.getenv("SPEECH_MODEL_REPO", "openai/whisper-base")
+        print(f"  {repo} (MIT licence)")
+        snapshot_download(repo, local_dir=root / "speech", allow_patterns=["*.json", "*.txt", "*.safetensors"])
+    step("speech-to-text model", _speech)
 if a.all or a.syncnet:
     print("NOTE: the SyncNet weights are published by the Oxford VGG group for RESEARCH use. Get a commercial licence or train your own before commercial deployment.")
     step("syncnet", lambda: fetch(SYNCNET, root / "syncnet" / "syncnet_v2.model"))

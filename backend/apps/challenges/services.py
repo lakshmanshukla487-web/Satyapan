@@ -62,11 +62,22 @@ PHRASE_MIN_MATCH = 2 / 3  # share of the requested words that must be heard
 WORD_SIMILARITY = 0.8  # tolerates speech-to-text variants such as harbor / harbour
 
 
+def _sound(w: str) -> str:
+    """Rough spelling-independent form: speech-to-text writes the same Indian word several ways (Holi / holy, Lassi / lassie)."""
+    w = w.replace("ee", "i").replace("oo", "u").replace("y", "i").replace("ph", "f").replace("w", "v")
+    return re.sub(r"(.)\1+", r"\1", w)
+
+
 def _phrase_match(expected: str, said: str) -> tuple[int, int, list[str]]:
-    """Count how many requested words were heard. Browser speech recognition often changes spelling or adds
-    punctuation, so an exact string match would fail people who did speak the phrase correctly."""
+    """Count how many requested words were heard. Speech recognition often changes spelling, adds punctuation or splits a
+    word in two (Bolly wood), so an exact string match would fail people who did speak the phrase correctly."""
     want, heard = _norm(expected).split(), _norm(said).split()
-    missing = [w for w in want if not any(SequenceMatcher(None, w, h).ratio() >= WORD_SIMILARITY for h in heard)]
+    heard = heard + [a + b for a, b in zip(heard, heard[1:])]
+
+    def found(w: str) -> bool:
+        return any(SequenceMatcher(None, w, h).ratio() >= WORD_SIMILARITY or SequenceMatcher(None, _sound(w), _sound(h)).ratio() >= WORD_SIMILARITY
+                   for h in heard)
+    missing = [w for w in want if not found(w)]
     return len(want) - len(missing), len(want), missing
 
 
@@ -84,6 +95,9 @@ def evaluate(c: Challenge, m: dict, server: dict | None = None) -> tuple[str, di
     SERVER measured on the frames uploaded during the challenge (server = geometry.series_summary of those frames)."""
     result, detail = _evaluate_client(c, m)
     detail["verification"] = "client_only"
+    if c.challenge_type == "phrase" and isinstance(m.get("server_text"), str) and m.get("server_speech") == "ok":
+        detail["verification"] = "server_confirmed"  # the server heard the words itself, in the recording
+        return result, detail
     if not server or server.get("n", 0) < SERVER_MIN_FRAMES:
         return result, detail
     detail["server"] = {k: server.get(k) for k in ("n", "turn_left_deg", "turn_right_deg", "ear_dips", "mar_range")}
@@ -136,14 +150,22 @@ def _evaluate_client(c: Challenge, m: dict) -> tuple[str, dict]:
         if n >= BLINKS_REQUIRED:
             return out("passed", f"{int(n)} blinks counted ({BLINKS_REQUIRED} required).")
         return out("failed", f"{int(n)} blink(s) counted; {BLINKS_REQUIRED} are required.")
-    said = m.get("spoken_text")
-    if not isinstance(said, str):
-        return out("unavailable", "No speech was recognised (microphone silent, browser has no speech recognition, or the step was skipped).")
+    server_said, server = m.get("server_text"), m.get("server_speech")
+    said = server_said if server == "ok" and isinstance(server_said, str) and server_said.strip() else m.get("spoken_text")
+    if not isinstance(said, str) or not said.strip():
+        if server == "silent":
+            return out("unavailable", "The recording of the phrase was silent: the customer's microphone sent no sound.")
+        if server == "ok":
+            return out("failed", "The server listened to the recording but heard none of the requested words.")
+        why = {"MODEL_NOT_DOWNLOADED": "the server's speech model is not installed (python scripts/download_models.py --speech)",
+               "DISABLED": "the server's speech check is switched off (ENABLE_SPEECH_CHECK)"}.get(str(server), "")
+        return out("unavailable", "No speech was recognised" + (f": {why}, and the browser's speech recognition heard nothing." if why
+                                                               else " (microphone silent, browser has no speech recognition, or the step was skipped)."))
     expected = c.challenge_text.removeprefix("Say aloud:")
     ok_words, total, missing = _phrase_match(expected, said)
     if total and ok_words / total >= PHRASE_MIN_MATCH:
-        return out("passed", f"Heard {ok_words} of {total} requested words.")
-    return out("failed", f"Heard only {ok_words} of {total} requested words (missing: {', '.join(missing) or 'none'}).")
+        return out("passed", f"Heard {ok_words} of {total} requested words (\"{said.strip()[:80]}\").")
+    return out("failed", f"Heard only {ok_words} of {total} requested words (missing: {', '.join(missing) or 'none'}; heard \"{said.strip()[:80]}\").")
 
 
 def record_result(s, c: Challenge, result: str, detail: dict, measured: dict) -> Challenge:
@@ -169,6 +191,17 @@ def release(c: Challenge, officer, ttl: int) -> Challenge:
     c.issued_at, c.expires_at = now, now + timedelta(seconds=life)
     c.save()
     return c
+
+
+def replace_open(s) -> list:
+    """Close every challenge that is still open (waiting for the officer or with the customer) because the officer sends a
+    challenge of their own choice. Marked 'regenerated': the customer is not counted as having missed them. -> their ids."""
+    ids = []
+    for c in Challenge.objects.filter(session=s, status__in=("awaiting_approval", "issued")):
+        c.status, c.approval_status = "expired", "regenerated"
+        c.save(update_fields=["status", "approval_status"])
+        ids.append(c.id)
+    return ids
 
 
 def expire_stale(s) -> int:

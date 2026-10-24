@@ -9,6 +9,7 @@ urlpatterns = [
     path(f"{S}/<str:session_id>/challenges/current", views.challenge_current),
     path(f"{S}/<str:session_id>/challenges/issue", views.challenge_issue),
     path(f"{S}/<str:session_id>/challenges/<str:challenge_id>/result", views.challenge_result),
+    path(f"{S}/<str:session_id>/challenges/<str:challenge_id>/phrase", views.challenge_phrase),
     path(f"{S}/<str:session_id>/challenges/<str:challenge_id>/approve", views.challenge_approve),
     path(f"{S}/<str:session_id>/challenges/<str:challenge_id>/regenerate", views.challenge_regenerate),
 ]

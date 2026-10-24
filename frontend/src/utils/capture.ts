@@ -12,6 +12,7 @@ export function captureFrame(video: HTMLVideoElement | null): Promise<Blob | nul
 export function recordWav(stream: MediaStream, seconds: number): Promise<Blob> {
   return new Promise((resolve) => {
     const ctx = new AudioContext()
+    void ctx.resume().catch(() => undefined)  // a context created outside a click may start suspended and would record silence
     const chunks: Float32Array[] = []
     const src = ctx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()))
     const proc = ctx.createScriptProcessor(4096, 1, 1)

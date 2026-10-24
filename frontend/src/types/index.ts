@@ -1,4 +1,4 @@
-export type Role = 'customer' | 'officer'
+export type Role = 'customer' | 'officer' | 'developer'
 export interface User { id: number | string; username: string; role: Role }
 export type ApprovalStatus = 'not_required' | 'pending' | 'approved' | 'rejected' | 'expired'
 export interface SessionSummary { id: string; startedAt: string; status: SessionStatus; approval: ApprovalStatus }  // what a customer may see: no risk outcome
@@ -8,7 +8,11 @@ export type ChallengeStatus = 'pending' | 'in_progress' | 'passed' | 'failed' | 
 export type SignalStatus = 'available' | 'flagged' | 'unavailable' | 'low_quality' | 'not_run'
 export type Quality = 'good' | 'fair' | 'poor'
 export type ChallengeKind = 'head_left' | 'head_right' | 'blink' | 'phrase' | 'eye_scan'
-export interface Challenge { id: string; type: 'digits' | 'head_turn' | 'blink' | 'eye_scan'; prompt: string; status: ChallengeStatus; completedAt: string | null; kind?: ChallengeKind }
+export interface Challenge {
+  id: string; type: 'digits' | 'head_turn' | 'blink' | 'eye_scan'; prompt: string; status: ChallengeStatus; completedAt: string | null; kind?: ChallengeKind
+  /** Present in the officer's view (and, for the timing fields, in the customer's once released). Never contains a result for the customer. */
+  sessionId?: string; sequence?: number; issuedAt?: string; expiresAt?: string; result?: string | null; verification?: string | null; reason?: string | null; approvalStatus?: string
+}
 export interface DetectorSignal { id: string; name: string; model: string; optional: boolean; status: SignalStatus; score: number | null; quality: Quality | null; timestamp: string | null; explanation: string }
 export type ReasonSeverity = 'indicator' | 'missing' | 'note' | 'ok'
 /** Why the session got its colour. indicator = counted toward the level; missing = evidence gap; note = informational; ok = supports authenticity. */
@@ -58,6 +62,11 @@ export type DocType = 'applicant' | 'pan' | 'aadhaar' | 'passport' | 'driving_li
 export interface DocProblem { doc_type?: string; field: string; code: string; message: string; severity?: 'error' | 'warning' }
 export interface DocumentUploadResult { doc_type: string; accepted: boolean; problems: DocProblem[] }
 export interface DocumentSubmitResult { status: 'accepted' | 'needs_correction'; problems: DocProblem[]; missing: string[]; message: string }
+/** What the customer may see about one document already on the server: whether it is acceptable and what to fix. Files are never
+ *  stored, so only the kind of file and the fact that one was received are known (not its name). */
+export interface CustomerDocState { doc_type: DocType; accepted: boolean; problems: DocProblem[]; has_file: boolean; file_kind: string; updated_at?: string }
+export interface CustomerDocuments { documents: CustomerDocState[]; status: 'accepted' | 'needs_correction' | 'not_submitted' }
+export interface DocumentRemoveResult { doc_type: string; removed: boolean; status: 'not_submitted' }
 export interface DocFinding { code: string; severity: 'indicator' | 'note' | 'ok'; title: string; detail: string; docs: string[] }
 export interface OfficerDocument { doc_type: string; info: Record<string, unknown>; problems: DocProblem[]; ocr: { state?: string; number_found?: boolean; name_overlap?: number | null }; file_sha256: string | null; file_kind: string }
 export interface OfficerDocuments { status: 'not_submitted' | 'needs_correction' | 'flagged' | 'accepted'; checked_at: string | null; findings: DocFinding[]; missing: string[]; documents: OfficerDocument[] }
@@ -71,4 +80,13 @@ export interface IntegrityProbe {
 }
 export interface RtcConfig { enabled: boolean; iceServers: { urls: string[]; username?: string; credential?: string }[]; relayConfigured: boolean }
 export interface PendingSession { id: string; customer: string | null; createdAt: string }
+/** One row of the officer review console (GET /officer/dashboard): everything the table needs, in one request. */
+export interface DashboardSession {
+  id: string; customer: string | null; status: SessionStatus; backendStatus: string; approval: ApprovalStatus; startedAt: string; tier: RiskTier; recommendation: string
+  documentsStatus: OfficerDocuments['status'] | 'not_checked'; signalsOk: number; signalsTotal: number; terminationReason?: string
+}
+export interface DashboardActivity { id: string; sessionId: string; type: string; timestamp: string }
+export interface OfficerDashboard { sessions: DashboardSession[]; total: number; pendingApprovals: PendingApproval[]; pendingRequests: PendingSession[]; activity: DashboardActivity[]; simulated: boolean }
+/** The pieces of a session the live workspace refreshes independently (only what an event says has changed). */
+export type SessionPart = 'core' | 'analysis' | 'challenges' | 'events' | 'documents'
 export interface ReferenceResult { accepted: boolean; face_check: string; iris_check: string; issues: string[]; messages?: string[]; blocking?: string[] }

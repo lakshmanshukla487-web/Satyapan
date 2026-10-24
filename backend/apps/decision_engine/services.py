@@ -1,6 +1,7 @@
 import hashlib
 from statistics import median
 
+from django.db.models import Count, Max
 from django.utils import timezone
 
 from apps.biometrics.models import Observation
@@ -14,8 +15,13 @@ from apps.signals.serializers import SignalSerializer
 from apps.verification.models import VerificationSession
 
 
+def _current(rows):
+    """Leave out results of a document file the customer replaced or removed (marked superseded; kept only as history)."""
+    return [r for r in rows if not (r.details or {}).get("superseded")]
+
+
 def latest_signals(session_id) -> list[DetectorSignal]:
-    rows = DetectorSignal.objects.filter(session_id=session_id).order_by("created_at")
+    rows = _current(DetectorSignal.objects.filter(session_id=session_id).order_by("created_at"))
     return list({r.detector_name: r for r in rows}.values())
 
 
@@ -23,7 +29,7 @@ def aggregate_signals(session_id) -> list[dict]:
     """One entry per detector built from EVERY sample received in the session, so a single noisy frame or clip
     (or a bad final sample) cannot decide the outcome. score = median of the usable scores."""
     groups: dict[str, list[DetectorSignal]] = {}
-    for r in DetectorSignal.objects.filter(session_id=session_id).order_by("created_at"):
+    for r in _current(DetectorSignal.objects.filter(session_id=session_id).order_by("created_at")):
         groups.setdefault(r.detector_name, []).append(r)
     out = []
     for name, rows in groups.items():
@@ -60,7 +66,7 @@ def collect_inputs(s: VerificationSession) -> dict:
     t0 = s.started_at or s.created_at
     end = s.completed_at or timezone.now()
     duration = (end - t0).total_seconds() if s.started_at else None
-    rows = list(DetectorSignal.objects.filter(session_id=s.id).order_by("created_at"))
+    rows = _current(DetectorSignal.objects.filter(session_id=s.id).order_by("created_at"))
     by_det: dict[str, list[DetectorSignal]] = {}
     for r in rows:
         by_det.setdefault(r.detector_name, []).append(r)
@@ -113,7 +119,10 @@ def _decision_version(s: VerificationSession) -> str:
     last = DetectorSignal.objects.filter(session_id=s.id).order_by("-created_at").values_list("created_at", flat=True).first()
     n_ch = Challenge.objects.filter(session=s).count()
     n_done = Challenge.objects.filter(session=s, status="answered").count()
-    return f"{s.status}:{s.approval_status}:{last}:{n_ch}:{n_done}"
+    from apps.documents.models import DocumentCheck, KycDocument  # lazy: documents depends on this app
+    doc = DocumentCheck.objects.filter(session=s).values_list("status", "checked_at").first()
+    docs = KycDocument.objects.filter(session=s).aggregate(n=Count("id"), t=Max("updated_at"))
+    return f"{s.status}:{s.approval_status}:{last}:{n_ch}:{n_done}:{doc}:{docs['n']}:{docs['t']}"
 
 
 def current_decision(s: VerificationSession, fresh: bool = False) -> dict:

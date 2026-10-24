@@ -28,7 +28,7 @@ MAX_EYE_FRAMES = 6
 
 def _in_pool(rt, fn, *args):
     if not rt.gate.enter():
-        raise AppError("SERVER_BUSY", "The analysis service is busy. Please try again in a moment.", 503)
+        raise AppError("SERVER_BUSY", "The analysis service is busy. Please try again in a moment.", 503, retry_after=2)
     try:
         return rt.pool.submit(fn, *args).result()
     finally:

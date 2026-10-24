@@ -1,6 +1,8 @@
+import ipaddress
 import json
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
@@ -13,6 +15,33 @@ from apps.realtime.relay import MAX_FRAME, Bucket, clean_message
 from apps.verification.models import VerificationSession
 
 
+def _dev_local_origin(origin: str) -> bool:
+    """Development only: the Vite dev server (http or https, see setup-https.sh) is opened at localhost or at this machine's
+    LAN address, which changes from network to network. Accept those origins without listing each one in EXTRA_ORIGINS.
+    The bearer token is still required; public hosts are still refused."""
+    try:
+        u = urlsplit(origin)
+        host = u.hostname or ""
+    except ValueError:
+        return False
+    if u.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
+def origin_allowed(origin: str | None) -> bool:
+    if origin is None:  # a browser always sends Origin. Outside development a missing Origin is refused too (A05/A01).
+        return settings.DEBUG
+    rt = get_runtime()
+    return origin in rt.allowed_origins or (rt.settings.app_env == "development" and _dev_local_origin(origin))
+
+
 class _AuthedConsumer(AsyncJsonWebsocketConsumer):
     """Shared connection checks. Browsers cannot set headers on WebSockets, so the token travels as a subprotocol:
     new WebSocket(url, ["satyapan.v1", token]). It never appears in the URL or in access logs.
@@ -23,8 +52,7 @@ class _AuthedConsumer(AsyncJsonWebsocketConsumer):
 
     async def _authenticate(self):
         origin = next((v.decode() for k, v in self.scope["headers"] if k == b"origin"), None)
-        # A browser always sends Origin. Outside development a missing Origin is refused too (A05/A01).
-        if (origin is not None and origin not in get_runtime().allowed_origins) or (origin is None and not settings.DEBUG):
+        if not origin_allowed(origin):
             await self.close(code=4403)
             return None
         token = next((p for p in self.scope.get("subprotocols", []) if p != WS_SUBPROTOCOL), None)

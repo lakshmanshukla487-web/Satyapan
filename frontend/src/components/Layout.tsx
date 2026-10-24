@@ -9,6 +9,7 @@ const nav: Record<Role | 'anon', readonly (readonly [string, string])[]> = {
   anon: [['/', 'Home'], ['/login', 'Sign in']],
   customer: [['/dashboard', 'My dashboard'], ['/verify', 'Verify']],
   officer: [['/officer', 'Review console']],
+  developer: [['/developer', 'Model test lab']],
 }
 export function Layout() {
   const { user, logout } = useAuth()
@@ -27,7 +28,7 @@ export function Layout() {
             {user && <>
               <span className="ml-2 flex items-center gap-2.5 border-l border-white/10 pl-3">
                 <span className="grid h-7 w-7 place-items-center rounded-full bg-gradient-to-br from-ink-600 to-ink-700 text-xs font-semibold uppercase text-white">{user.username.slice(0, 1)}</span>
-                <span className="hidden text-slate-300 sm:inline">{user.username}</span><Pill tone={user.role === 'officer' ? 'cyan' : 'slate'}>{user.role}</Pill>
+                <span className="hidden text-slate-300 sm:inline">{user.username}</span><Pill tone={user.role === 'officer' ? 'cyan' : user.role === 'developer' ? 'amber' : 'slate'}>{user.role}</Pill>
               </span>
               <button onClick={() => { logout(); navigate('/login') }} className="ml-1 inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-slate-400 transition-colors hover:text-white"><LogOut className="h-4 w-4" />Sign out</button>
             </>}
