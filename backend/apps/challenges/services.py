@@ -34,15 +34,20 @@ def pick_kind(session_id, iris_enrolled: bool) -> str:
     return secrets.choice(pool)
 
 
+def text_for(kind: str) -> str:
+    """What the customer is asked to do (fresh random words for 'phrase')."""
+    return {"head_left": "Turn your head slowly to the left", "head_right": "Turn your head slowly to the right", "blink": "Blink twice",
+            "phrase": "Say aloud: " + " ".join(_rng.sample(WORDS, 3)),
+            "eye_scan": "Move close to the camera, open your eyes wide and hold still for three seconds"}[kind]
+
+
 def issue(session_id: str, ttl: int, *, kind: str | None = None, require_approval: bool = False, approval_timeout: int = 300, sequence: int = 0) -> Challenge:
     """Create (not save) a challenge. With require_approval the challenge starts hidden from the customer
     (status awaiting_approval) and only becomes visible once an officer approves it; its lifetime then restarts."""
     if kind is not None and kind not in KINDS:
         raise ValueError(f"unknown challenge kind {kind!r}")
     kind = kind or secrets.choice([k for k in KINDS if k != "eye_scan"])
-    text = {"head_left": "Turn your head slowly to the left", "head_right": "Turn your head slowly to the right", "blink": "Blink twice",
-            "phrase": "Say aloud: " + " ".join(_rng.sample(WORDS, 3)),
-            "eye_scan": "Move close to the camera, open your eyes wide and hold still for three seconds"}[kind]
+    text = text_for(kind)
     if kind == "eye_scan":
         ttl = max(ttl, EYE_SCAN_MIN_TTL)
     now = timezone.now()

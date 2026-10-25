@@ -36,17 +36,20 @@ function useCountdown(iso?: string): number | null {
   return iso ? Math.max(0, Math.round((new Date(iso).getTime() - now) / 1000)) : null
 }
 
-/** One challenge waiting for an officer. Its text is hidden from the customer until it is approved here. */
+/** One challenge waiting for an officer. Its text is hidden from the customer until it is approved here. The ONE type selector
+ *  starts at the generated type; whatever it shows is exactly what "Approve and send" releases to the customer. */
 export function PendingChallenge({ sessionId, c, onDone }: { sessionId: string; c: Challenge; onDone: () => void }) {
   const [busy, setBusy] = useState<'approve' | 'regen' | null>(null)
-  const [kind, setKind] = useState<ChallengeKind | ''>('')
+  const [kind, setKind] = useState<ChallengeKind | ''>(c.kind ?? '')
   const [err, setErr] = useState<string | null>(null)
   const left = useCountdown(c.expiresAt)
+  useEffect(() => setKind(c.kind ?? ''), [c.id, c.kind])  // a replaced challenge starts from its own type again
+  const changed = Boolean(kind && kind !== c.kind)
   const run = async (what: 'approve' | 'regen') => {
     if (c.sessionId && c.sessionId !== sessionId) { setErr('This challenge belongs to a different session. Reload the page.'); return }  // never act across sessions
     setBusy(what); setErr(null)
     try {
-      if (what === 'approve') await service.approveChallenge(sessionId, c.id)
+      if (what === 'approve') await service.approveChallenge(sessionId, c.id, kind || undefined)
       else await service.regenerateChallenge(sessionId, c.id, kind || undefined)
       onDone()
     } catch (e) { setErr(msg(e)); onDone() } finally { setBusy(null) }
@@ -56,19 +59,21 @@ export function PendingChallenge({ sessionId, c, onDone }: { sessionId: string; 
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-wider text-amber-300">Waiting for your approval{c.sequence ? ` · #${c.sequence}` : ''}</p>
-          <p className="mt-1 text-lg font-medium text-white">{c.prompt}</p>
-          {c.kind && <p className="mt-1 text-xs text-slate-400">{INSTRUCTIONS[c.kind]}</p>}
+          <p className={`mt-1 text-lg font-medium ${changed ? 'text-slate-500 line-through' : 'text-white'}`}>{c.prompt}</p>
+          {changed && kind && <p className="mt-1 text-sm text-amber-200">Will be sent as: <span className="font-medium text-white">{KIND_LABEL[kind]}</span>{kind === 'phrase' ? ' (new random words)' : ''}</p>}
+          {(changed ? kind : c.kind) && <p className="mt-1 text-xs text-slate-400">{INSTRUCTIONS[(changed ? kind : c.kind) as ChallengeKind]}</p>}
           <p className="mt-1 text-xs text-slate-500">The customer cannot see this yet.{left !== null ? ` The request expires in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}.` : ''}</p>
         </div>
         <Hourglass className="h-5 w-5 shrink-0 text-amber-300" />
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className={btnSuccess} disabled={busy !== null || left === 0} onClick={() => void run('approve')}>{busy === 'approve' ? <Spinner /> : <CheckCircle2 className="h-4 w-4" />}Approve and release</button>
-        <select aria-label="Type for the replacement challenge" className={`${inputCls} !mt-0 !w-auto`} value={kind} onChange={(e) => setKind(e.target.value as ChallengeKind | '')}>
-          <option value="">Random type</option>
-          {(Object.keys(KIND_LABEL) as ChallengeKind[]).map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-        </select>
-        <button className={btnGhost} disabled={busy !== null || left === 0} onClick={() => void run('regen')}>{busy === 'regen' ? <Spinner /> : <RefreshCw className="h-4 w-4" />}Reject and regenerate</button>
+        <label className="flex items-center gap-2 text-sm text-slate-300">Challenge type
+          <select aria-label="Challenge type to send" className={`${inputCls} !mt-0 !w-auto`} value={kind} disabled={busy !== null} onChange={(e) => setKind(e.target.value as ChallengeKind)}>
+            {!c.kind && <option value="">As generated</option>}
+            {(Object.keys(KIND_LABEL) as ChallengeKind[]).map((k) => <option key={k} value={k}>{KIND_LABEL[k]}{k === c.kind ? ' (generated)' : ''}</option>)}
+          </select></label>
+        <button className={btnSuccess} disabled={busy !== null || left === 0} onClick={() => void run('approve')}>{busy === 'approve' ? <Spinner /> : <CheckCircle2 className="h-4 w-4" />}Approve and send</button>
+        <button className={btnGhost} disabled={busy !== null || left === 0} onClick={() => void run('regen')} title="Discard this one and generate a new hidden challenge of the selected type, to look at before sending">{busy === 'regen' ? <Spinner /> : <RefreshCw className="h-4 w-4" />}Regenerate</button>
       </div>
       {left === 0 && <p className="mt-2 text-xs text-slate-400">This request expired; the customer's page asks for a new one automatically.</p>}
       {err && <div className="mt-3"><ErrorBox message={err} /></div>}
@@ -127,7 +132,7 @@ export function ApprovalPanel({ sessionId, challenges, live, autoApprove = false
       {live && current && <CurrentChallenge c={current} />}
       {live && !current && pending.length === 0 && (
         <p className="flex items-start gap-2 rounded-xl border border-white/[0.07] p-3 text-sm text-slate-400"><ShieldQuestion className="mt-0.5 h-4 w-4 shrink-0" />No challenge is open. The next one appears here as soon as the customer's page requests it (a short pause follows each answer).</p>)}
-      {live && (
+      {live && pending.length === 0 && (
         <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-4">
           <span className="text-sm text-slate-400">Run a challenge now:</span>
           <select aria-label="Challenge type" className={`${inputCls} !mt-0 !w-auto`} value={kind} onChange={(e) => setKind(e.target.value as ChallengeKind)}>

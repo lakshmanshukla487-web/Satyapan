@@ -22,7 +22,7 @@ export interface SatyapanService {
   currentChallenge(id: string): Promise<Challenge | null>  // customer polling fallback for the approval workflow
   // officer actions
   listPendingApprovals(): Promise<PendingApproval[]>
-  approveChallenge(id: string, challengeId: string): Promise<void>
+  approveChallenge(id: string, challengeId: string, kind?: ChallengeKind): Promise<void>  // kind: release this type instead of the generated one
   regenerateChallenge(id: string, challengeId: string, kind?: ChallengeKind): Promise<void>
   issueChallengeAsOfficer(id: string, kind?: ChallengeKind): Promise<void>
   terminateSession(id: string, reason: string): Promise<void>

@@ -176,3 +176,52 @@ async def test_customer_and_feed_sockets_are_access_controlled(make_client):
     await sync_to_async(c.post)(f"{S}/{sid}/consent", json={"granted": True})
     assert (await feed.receive_json_from())["event"] == "session.status"
     await feed.disconnect()
+
+
+@pytest.mark.parametrize("chosen", ["head_left", "head_right", "blink", "phrase", "eye_scan"])
+def test_approve_releases_the_type_the_officer_chose(make_client, chosen):
+    """Regression: the officer picked a type, pressed Approve, and the customer got the randomly generated challenge instead."""
+    c = make_client(require_challenge_approval=True)
+    sid = running_session(c)
+    cid = _pending(c, sid)["id"]
+    generated = next(x for x in c.officer.get(f"{S}/{sid}/challenges").json() if x["id"] == cid)["challenge_type"]
+    r = c.officer.post(f"{S}/{sid}/challenges/{cid}/approve", json={"type": chosen})
+    assert r.status_code == 200 and r.json()["challenge_type"] == chosen
+    seen = c.get(f"{S}/{sid}/challenges/current").json()["challenge"]  # what the customer's page receives
+    assert seen["id"] == cid and seen["status"] == "issued" and seen["challenge_type"] == chosen
+    assert seen["challenge_text"].startswith({"head_left": "Turn your head slowly to the left", "head_right": "Turn your head slowly to the right",
+                                              "blink": "Blink twice", "phrase": "Say aloud: ", "eye_scan": "Move close"}[chosen])
+    events = [e["event_type"] for e in c.officer.get(f"{S}/{sid}/evidence").json()["events"]]
+    assert ("challenge.type_changed" in events) == (chosen != generated)  # a change of type is on the record
+
+
+def test_approve_without_a_type_releases_the_generated_challenge(make_client):
+    c = make_client(require_challenge_approval=True)
+    sid = running_session(c)
+    cid = _pending(c, sid)["id"]
+    before = next(x for x in c.officer.get(f"{S}/{sid}/challenges").json() if x["id"] == cid)
+    assert c.officer.post(f"{S}/{sid}/challenges/{cid}/approve").status_code == 200
+    after = c.get(f"{S}/{sid}/challenges/current").json()["challenge"]
+    assert (after["challenge_type"], after["challenge_text"]) == (before["challenge_type"], before["challenge_text"])
+    c.post(f"{S}/{sid}/challenges/{cid}/result", json={"measured": {}})  # answer it, so the next one can be generated
+    nxt = _pending(c, sid)["id"]
+    assert c.officer.post(f"{S}/{sid}/challenges/{nxt}/approve", json={"type": "nonsense"}).status_code == 422  # refused, not released
+    assert c.get(f"{S}/{sid}/challenges/current").json()["challenge"]["status"] == "awaiting_approval"
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_customer_socket_receives_the_officers_choice(make_client):
+    c = await sync_to_async(make_client)(require_challenge_approval=True)
+    sid = await sync_to_async(running_session)(c)
+    cust = comm(f"/ws/customer/{sid}", c.token)
+    assert (await cust.connect())[0]
+    await cust.receive_json_from()  # status
+    ch = (await sync_to_async(c.post)(f"{S}/{sid}/challenges")).json()
+    rows = (await sync_to_async(c.officer.get)(f"{S}/{sid}/challenges")).json()
+    chosen = next(k for k in ("blink", "phrase") if k != next(x for x in rows if x["id"] == ch["id"])["challenge_type"])
+    await sync_to_async(c.officer.post)(f"{S}/{sid}/challenges/{ch['id']}/approve", json={"type": chosen})
+    released = await cust.receive_json_from()
+    while released["event"] != "challenge.released":
+        released = await cust.receive_json_from()
+    assert released["data"]["id"] == ch["id"] and released["data"]["challenge_type"] == chosen
+    await cust.disconnect()

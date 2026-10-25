@@ -139,7 +139,7 @@ export const realService: SatyapanService = {
     const r = await api<{ items: { challenge: BChallenge; session: { id: string; customer: string | null } }[] }>(ep.pendingApprovals)
     return r.items.map((x) => ({ challenge: toChallenge(x.challenge), sessionId: x.session.id, customer: x.session.customer }))
   },
-  async approveChallenge(id, cid) { await api(ep.challengeApprove(id, cid), { method: 'POST' }) },
+  async approveChallenge(id, cid, kind) { await api(ep.challengeApprove(id, cid), { method: 'POST', body: JSON.stringify(kind ? { type: kind } : {}) }) },
   async regenerateChallenge(id, cid, kind) { await api(ep.challengeRegenerate(id, cid), { method: 'POST', body: JSON.stringify(kind ? { type: kind } : {}) }) },
   async issueChallengeAsOfficer(id, kind) { await api(ep.challengeIssue(id), { method: 'POST', body: JSON.stringify(kind ? { type: kind } : {}) }) },
   async terminateSession(id, reason) { await api(ep.terminate(id), { method: 'POST', body: JSON.stringify({ reason }) }) },

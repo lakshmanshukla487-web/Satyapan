@@ -170,15 +170,23 @@ def _answerable(s, challenge_id: str) -> Challenge:
 
 # ---------------------------------------------------------------- officer approval workflow
 
-@extend_schema(tags=["officer"], request=None, responses=ChallengeSerializer)
+@extend_schema(tags=["officer"], request=ChallengeChoiceIn, responses=ChallengeSerializer)
 @api_view(["POST"])
 @permission_classes([IsOfficer])
 def challenge_approve(request, session_id, challenge_id):
-    """Release a pending challenge: from now on the customer sees it."""
+    """Release a pending challenge: from now on the customer sees it. With {"type": ...} the officer's choice is what gets released:
+    a different type replaces the generated one (new text) in the same step, so the customer sees exactly what the officer picked."""
+    body = ChallengeChoiceIn(data=request.data or {})
+    body.is_valid(raise_exception=True)
     s = get_or_404(session_id)
     require_running(s)
     c = _pending_or_404(s, challenge_id)
+    kind = body.validated_data.get("type")
     with transaction.atomic():
+        if kind and kind != c.challenge_type:
+            generated = c.challenge_type
+            c.challenge_type, c.challenge_text = kind, cs.text_for(kind)
+            append_event(s.id, "challenge.type_changed", {"challenge_id": str(c.id), "from": generated, "to": kind, "officer_id": request.user.pk})
         _release(c, s, request.user)
         append_event(s.id, "challenge.approved", {"challenge_id": str(c.id), "type": c.challenge_type, "officer_id": request.user.pk})
     audit(request, "officer.approve_challenge", session_id=s.id, challenge_id=str(c.id))
